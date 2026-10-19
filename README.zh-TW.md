@@ -37,6 +37,12 @@ dotnet build DuelLinksAccess.csproj -c Release -p:DuelLinksPath="你的遊戲安
 
 輸出為 `bin/Release/net6.0/DuelLinksAccess.dll`。編譯不代表完成安裝。替換模組前應關閉遊戲並備份原 DLL。
 
+## 貢獻資訊
+
+繁體中文維護、功能新增與錯誤修正：james54481。署名日期：2026-10-19。
+
+原始專案作者：Florian Beijers（zersiax）。原作者聲明與 MIT 授權予以保留。
+
 ## 發布與授權
 
 保留原作者 Florian Beijers 的 [MIT 授權及著作權聲明](LICENSE.txt)。本分支的修改沿用 MIT 授權；作者與貢獻來源依原始碼及 Git 歷史記錄保留。
