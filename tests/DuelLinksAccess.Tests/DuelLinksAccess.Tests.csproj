@@ -9,6 +9,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../updater/DuelLinksAccess.Updater.Core/DuelLinksAccess.Updater.Core.csproj" />
+    <ProjectReference Include="../../updater/Fixtures/Old/Old.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../updater/Fixtures/New/New.csproj" ReferenceOutputAssembly="false" />
+    <EmbeddedResource Include="../../updater/Fixtures/Old/bin/$(Configuration)/net8.0/DuelLinksAccess.dll" LogicalName="UpdaterFixture.Old" />
+    <EmbeddedResource Include="../../updater/Fixtures/New/bin/$(Configuration)/net8.0/DuelLinksAccess.dll" LogicalName="UpdaterFixture.New" />
+    <Compile Include="..\..\src\DuelConfirmationState.cs" Link="Source\DuelConfirmationState.cs" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
@@ -18,7 +24,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\CardSelectionPolicy.cs" Link="Source\CardSelectionPolicy.cs" />
+    <Compile Include="..\..\src\ExtraSummonPolicy.cs" Link="Source\ExtraSummonPolicy.cs" />
+    <Compile Include="..\..\src\DuelPullDownPolicy.cs" Link="Source\DuelPullDownPolicy.cs" />
+    <Compile Include="..\..\src\EffectChoicePolicy.cs" Link="Source\EffectChoicePolicy.cs" />
+    <Compile Include="..\..\src\CharacterChoicePolicy.cs" Link="Source\CharacterChoicePolicy.cs" />
+    <Compile Include="..\..\src\SettingsAccessibilityPolicy.cs" Link="Source\SettingsAccessibilityPolicy.cs" />
+    <Compile Include="..\..\src\AccessibleUiPolicy.cs" Link="Source\AccessibleUiPolicy.cs" />
     <Compile Include="..\..\src\AttackFallbackPolicy.cs" Link="Source\AttackFallbackPolicy.cs" />
+    <Compile Include="..\..\src\DrawSkillChoice.cs" Link="Source\DrawSkillChoice.cs" />
     <Compile Include="..\..\src\AutomaticDrawController.cs" Link="Source\AutomaticDrawController.cs" />
     <Compile Include="..\..\src\CardProgressionFormatter.cs" Link="Source\CardProgressionFormatter.cs" />
     <Compile Include="..\..\src\DialogControlPolicy.cs" Link="Source\DialogControlPolicy.cs" />
@@ -34,6 +48,8 @@
     <Compile Include="..\..\src\HarmonyPatchPolicy.cs" Link="Source\HarmonyPatchPolicy.cs" />
     <Compile Include="..\..\src\LateContentRetryPolicy.cs" Link="Source\LateContentRetryPolicy.cs" />
     <Compile Include="..\..\src\Loc.cs" Link="Source\Loc.cs" />
+    <Compile Include="..\..\src\LocalizationCatalog.cs" Link="Source\LocalizationCatalog.cs" />
+    <Compile Include="..\..\src\LabelLanguagePolicy.cs" Link="Source\LabelLanguagePolicy.cs" />
     <Compile Include="..\..\src\ScreenClassificationPolicy.cs" Link="Source\ScreenClassificationPolicy.cs" />
     <Compile Include="..\..\src\SpeechTextFormatter.cs" Link="Source\SpeechTextFormatter.cs" />
     <Compile Include="..\..\src\TicketExchangePolicy.cs" Link="Source\TicketExchangePolicy.cs" />
@@ -42,4 +58,8 @@
     <Compile Include="..\..\src\TurnAnnouncementTracker.cs" Link="Source\TurnAnnouncementTracker.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\resources\locales\*.json"
+                      LogicalName="DuelLinksAccess.Locales.%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

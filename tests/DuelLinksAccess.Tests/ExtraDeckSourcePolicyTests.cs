@@ -5,6 +5,20 @@ namespace DuelLinksAccess.Tests;
 public sealed class ExtraDeckSourcePolicyTests
 {
     [Theory]
+    [InlineData(true, true, true, 6, 0, ExtraDeckDataSource.Engine)]
+    [InlineData(false, true, true, 6, 6, ExtraDeckDataSource.LiveStack)]
+    [InlineData(false, true, true, 6, 1, ExtraDeckDataSource.Locators)]
+    [InlineData(false, true, true, 6, 0, ExtraDeckDataSource.Locators)]
+    [InlineData(false, true, true, 0, 0, ExtraDeckDataSource.Locators)]
+    [InlineData(false, true, true, 0, 1, ExtraDeckDataSource.Locators)]
+    [InlineData(false, true, false, 6, 0, ExtraDeckDataSource.Registered)]
+    [InlineData(false, false, false, -1, 0, ExtraDeckDataSource.Registered)]
+    public void CurrentPileNeverMixesWithInitialRegisteredOrdinals(bool engine,
+        bool place, bool loaded, int currentCount, int innerCount, ExtraDeckDataSource expected)
+        => Assert.Equal(expected, ExtraDeckSourcePolicy.ChooseSource(engine, place,
+            loaded, currentCount, innerCount));
+
+    [Theory]
     [InlineData(true, true, 6, true)]
     [InlineData(true, true, 1, true)]
     [InlineData(true, false, 6, false)]

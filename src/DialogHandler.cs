@@ -13,7 +13,7 @@ namespace DuelLinksAccess
     /// Up/Down to cycle through items, Left/Right to adjust sliders,
     /// Enter to click buttons, Tab to re-read current item, Space to re-scan.
     /// </summary>
-    public class DialogHandler
+    public partial class DialogHandler
     {
         #region Fields
 
@@ -24,6 +24,7 @@ namespace DuelLinksAccess
         private int _scanAttempts;
         private readonly List<DialogItem> _items = new();
         private int _focusIndex;
+        private bool _characterSelectionBusy;
 
         // Text mode: dialog has text but no buttons — Enter/Space dismisses
         private bool _textMode;
@@ -96,6 +97,10 @@ namespace DuelLinksAccess
             public string Label;
             public ItemType Type;
             public Slider SliderComponent; // non-null for sliders
+            public GameObject SettingsTarget; // real control; Go remains native action root
+            public Action NativeAction; // data-backed controls, independent of recycled cells
+            public Func<string> LiveLabel;
+            public Action<int> AdjustChoice;
         }
 
         #endregion
@@ -119,6 +124,7 @@ namespace DuelLinksAccess
                     _lastDialogText = "";
                     _dialogRoot = null;
                     _items.Clear();
+                    _characterSelectionBusy = false;
                     _postActivationRescanDelay = -1f;
                     _tabRescanDelay = -1f;
                     _passthrough = false;
@@ -161,6 +167,8 @@ namespace DuelLinksAccess
                     ScreenReader.Say(Loc.Get("screen_dialog"));
                 }
             }
+
+            PollSettingsPage();
 
             // Post-activation rescan: after clicking a button, check if a new
             // dialog was pushed on top (e.g. Privacy Notice opens policy viewer)
@@ -294,7 +302,7 @@ namespace DuelLinksAccess
                 // Read and announce dialog text first (Say to interrupt "Dialog" announcement).
                 // Skip re-announcing identical text on retry scans.
                 string dialogText = ReadDialogText(dialogRoot);
-                if (!string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
+                if (FindSettings(dialogRoot) == null && !string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                 {
                     AnnounceDialogText(dialogText);
                 }
@@ -304,6 +312,8 @@ namespace DuelLinksAccess
 
                 // Find clickable buttons in the dialog hierarchy
                 FindButtons(dialogRoot);
+
+                AddPurchaseControls(dialogRoot);
 
                 // Find section headers (e.g. "Character Unlock Missions", "Stage Missions")
                 // and insert them in DOM order among the button items
@@ -321,6 +331,8 @@ namespace DuelLinksAccess
                 // their current selected state and the deck-size/advanced
                 // controls from the VC's own live data
                 ApplyAutoDeckLabels(dialogRoot);
+                ApplySettingsItems(dialogRoot);
+                ApplyDownloadSettingsItems(dialogRoot);
 
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
                 // dismiss it or pass through so other handlers can run
@@ -362,14 +374,14 @@ namespace DuelLinksAccess
 
                 // Collapse duplicate Htjson list rows (missions, reward lists)
                 // and give their Info buttons row context before reporting.
-                TidyHtjsonListItems();
+                if (_settingsVc == null) TidyHtjsonListItems();
 
                 MelonLogger.Msg($"[Dialog] Found {_items.Count} interactive items");
 
                 _dialogRoot = dialogRoot;
 
                 // If dialog has tabs, announce the active tab name
-                string activeTabName = GetActiveTabName(dialogRoot);
+                string activeTabName = _settingsVc == null ? GetActiveTabName(dialogRoot) : null;
                 if (activeTabName != null)
                     ScreenReader.SayQueued(activeTabName + " tab");
 
@@ -536,60 +548,7 @@ namespace DuelLinksAccess
         /// Reads all text content from the dialog hierarchy.
         /// </summary>
         private string ReadDialogText(GameObject root)
-        {
-            var parts = new List<string>();
-
-            // Try YgomTextAccessor first (game's text system)
-            try
-            {
-                var ytas = root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true);
-                if (ytas != null)
-                {
-                    foreach (var text in ytas)
-                    {
-                        if (text == null) continue;
-                        if (text.gameObject != null && !text.gameObject.activeInHierarchy) continue;
-                        string t = LabelExtractor.StripRichText(text.text);
-                        if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
-                        if (t.All(char.IsDigit)) continue;
-                        if (!parts.Contains(t))
-                            parts.Add(t);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                MelonLogger.Msg($"[Dialog] ReadDialogText YTA error: {ex.Message}");
-            }
-
-            // Also try Unity Text as fallback
-            if (parts.Count == 0)
-            {
-                try
-                {
-                    var texts = root.GetComponentsInChildren<Text>(true);
-                    if (texts != null)
-                    {
-                        foreach (var text in texts)
-                        {
-                            if (text == null) continue;
-                            if (text.gameObject != null && !text.gameObject.activeInHierarchy) continue;
-                            string t = LabelExtractor.StripRichText(text.text);
-                            if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
-                            if (t.All(char.IsDigit)) continue;
-                            if (!parts.Contains(t))
-                                parts.Add(t);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MelonLogger.Msg($"[Dialog] ReadDialogText Text error: {ex.Message}");
-                }
-            }
-
-            return string.Join(". ", parts);
-        }
+            => AccessibleUiText.Read(root);
 
         /// <summary>
         /// Scans for category/section headers (Text inside "div" parent) and
@@ -704,6 +663,16 @@ namespace DuelLinksAccess
             catch (Exception ex)
             {
                 MelonLogger.Msg($"[Dialog] FindSliders error: {ex.Message}");
+            }
+        }
+
+        private void AddPurchaseControls(GameObject root)
+        {
+            foreach (var button in PurchaseAccessibility.Find(root))
+            {
+                _items.RemoveAll(i => i.Go == button.gameObject
+                    || i.Go.transform.IsChildOf(button.transform));
+                _items.Add(new DialogItem { Go = button.gameObject, Label = PurchaseAccessibility.Label(button), Type = ItemType.Button });
             }
         }
 
@@ -905,6 +874,12 @@ namespace DuelLinksAccess
                     Il2CppYgomGame.Menu.CharaFilterDialogViewController>();
                 if (vc == null) return;
 
+                if (vc.isCharaSelect || vc.isGate)
+                {
+                    BuildCharacterChoices(vc, dialogRoot);
+                    return;
+                }
+
                 // Flatten the dialog's chara data in display order.
                 var cids = new List<int>();
                 var actives = vc.activeSeries;
@@ -997,6 +972,125 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"[Dialog] ApplyCharaFilterLabels error: {ex.Message}");
             }
+        }
+
+        private void BuildCharacterChoices(
+            Il2CppYgomGame.Menu.CharaFilterDialogViewController vc, GameObject root)
+        {
+            var native = vc.GetCurrentCharaList();
+            if (native == null || native.Count == 0) return;
+            var choices = new List<DialogItem>();
+            var seen = new HashSet<int>();
+            int selected = CharacterChoicePolicy.ReadSingle(ReadCharacterSelection(vc));
+            DialogItem confirm = null;
+            for (int i = 0; i < native.Count; i++)
+            {
+                int cid = native[i];
+                if (cid <= 0 || !seen.Add(cid)) continue;
+                string name = ResolveCharaName(cid);
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                choices.Add(new DialogItem
+                {
+                    Go = root, Label = name, Type = ItemType.Button,
+                    LiveLabel = () => CharacterChoicePolicy.ReadSingle(ReadCharacterSelection(vc)) == cid
+                        ? Loc.Get("deck_auto_selected", name) : name,
+                    NativeAction = () =>
+                    {
+                        // Revalidate against live game data before sending an identity.
+                        var current = vc.GetCurrentCharaList();
+                        if (!vc.CharaBtnEnable || current == null || !current.Contains(cid)
+                            || (Il2CppYgomGame.Menu.CharaFilterDialogViewController.grayedList != null && Il2CppYgomGame.Menu.CharaFilterDialogViewController.grayedList.Contains(cid)))
+                        {
+                            ScreenReader.Say(Loc.Get("dialog_click_error"));
+                            return;
+                        }
+                        _characterSelectionBusy = true;
+                        MelonCoroutines.Start(CharacterPortraitBindings.Select(vc, cid,
+                            () => LabelExtractor.IsAlive(root)
+                                && GetTopVcInstanceId(_activeManager) == root.GetInstanceID(),
+                            clicked =>
+                        {
+                        _characterSelectionBusy = false;
+                        if (!clicked)
+                        {
+                            selected = -1;
+                            ScreenReader.Say(Loc.Get("character_selection_mismatch"));
+                            return;
+                        }
+                        var actual = ReadCharacterSelection(vc);
+                        MelonLogger.Msg($"[CharacterSelect] R10 requested={cid} actual=[{string.Join(",", actual)}] gate={vc.isGate} button={ReadCharacterActionLabel(vc)}");
+                        if (CharacterChoicePolicy.ReadSingle(actual) != cid)
+                        {
+                            selected = -1;
+                            ScreenReader.Say(Loc.Get("character_selection_mismatch"));
+                            return;
+                        }
+                        selected = cid;
+                        ScreenReader.Say(Loc.Get("character_selection_ready", name));
+                        // Keep focus on the spoken character, with Confirm immediately below.
+                        if (GetTopVcInstanceId(_activeManager) == root.GetInstanceID()
+                            && confirm != null)
+                        {
+                            var focused = _items[_focusIndex];
+                            _items.Remove(confirm);
+                            _focusIndex = _items.IndexOf(focused);
+                            _items.Insert(_focusIndex + 1, confirm);
+                        }
+                        }));
+                    }
+                });
+            }
+            if (choices.Count == 0) return;
+            confirm = new DialogItem
+            {
+                Go = root, Label = ReadCharacterActionLabel(vc), Type = ItemType.Button,
+                LiveLabel = () => ReadCharacterActionLabel(vc),
+                NativeAction = () =>
+                {
+                    var current = vc.GetCurrentCharaList();
+                    var actual = ReadCharacterSelection(vc);
+                    bool available = current != null && current.Contains(selected)
+                        && !(Il2CppYgomGame.Menu.CharaFilterDialogViewController.grayedList != null
+                            && Il2CppYgomGame.Menu.CharaFilterDialogViewController.grayedList.Contains(selected));
+                    if (!CharacterChoicePolicy.CanConfirm(selected, actual, available, vc.CharaBtnEnable))
+                    {
+                        MelonLogger.Msg($"[CharacterSelect] R9 blocked requested={selected} actual=[{string.Join(",", actual)}] enabled={vc.CharaBtnEnable}");
+                        ScreenReader.Say(Loc.Get("character_selection_mismatch"));
+                        return;
+                    }
+                    MelonLogger.Msg($"[CharacterSelect] confirm cid={selected}, gate={vc.isGate}");
+                    vc.OnClick();
+                }
+            };
+            choices.Add(confirm);
+            if (vc.pulldownText != null)
+                choices.Add(new DialogItem
+                {
+                    Go = root, Type = ItemType.Button,
+                    Label = vc.pulldownText.text,
+                    LiveLabel = () => vc.pulldownText.text,
+                    NativeAction = () => vc.OnClickPullDown()
+                });
+            _items.Clear();
+            _items.AddRange(choices);
+            MelonLogger.Msg($"[CharacterSelect] R9 characters={seen.Count} selected=[{string.Join(",", ReadCharacterSelection(vc))}] gate={vc.isGate} button={ReadCharacterActionLabel(vc)}");
+        }
+
+        private static List<int> ReadCharacterSelection(
+            Il2CppYgomGame.Menu.CharaFilterDialogViewController vc)
+        {
+            var result = new List<int>();
+            var filters = vc.GetFilters();
+            if (filters != null)
+                for (int i = 0; i < filters.Count; i++) result.Add(filters[i]);
+            return result;
+        }
+
+        private static string ReadCharacterActionLabel(
+            Il2CppYgomGame.Menu.CharaFilterDialogViewController vc)
+        {
+            string text = vc.okButtonLabel?.text;
+            return string.IsNullOrWhiteSpace(text) ? vc.GetOKButtonLabel() : text.Trim();
         }
 
         /// <summary>Resolves a character id to a display name via CharaUtil.</summary>
@@ -1669,6 +1763,7 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            if (_characterSelectionBusy) return;
             // Text mode: no buttons, just text — Enter/Space to dismiss
             if (_textMode)
             {
@@ -1743,6 +1838,12 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
+                if (_focusIndex >= 0 && _focusIndex < _items.Count
+                    && _items[_focusIndex].LiveLabel != null)
+                {
+                    AnnounceCurrentItem();
+                    return;
+                }
                 // Re-read dialog text from the active dialog VC
                 var root = GetTopVcRoot(_activeManager);
                 if (root != null)
@@ -1780,6 +1881,8 @@ namespace DuelLinksAccess
             }
 
             int pos = _focusIndex + 1;
+            if (item.SettingsTarget != null) RevealSettingsTarget(item.SettingsTarget);
+            if (item.LiveLabel != null) item.Label = item.LiveLabel();
             int total = _items.Count;
 
             string msg;
@@ -1792,7 +1895,9 @@ namespace DuelLinksAccess
                 int val = Mathf.RoundToInt(item.SliderComponent.value);
                 int min = Mathf.RoundToInt(item.SliderComponent.minValue);
                 int max = Mathf.RoundToInt(item.SliderComponent.maxValue);
-                msg = Loc.Get("dialog_slider_item", pos, total, val, min, max);
+                msg = item.SettingsTarget != null
+                    ? Loc.Get("settings_slider_item", item.Label, val, min, max, pos, total)
+                    : Loc.Get("dialog_slider_item", pos, total, val, min, max);
             }
             else
             {
@@ -1810,10 +1915,17 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+            if (item.AdjustChoice != null)
+            {
+                item.AdjustChoice(direction);
+                return;
+            }
             if (item.Type != ItemType.Slider || item.SliderComponent == null)
                 return;
 
             var slider = item.SliderComponent;
+            if (item.SettingsTarget != null && (!slider.gameObject.activeInHierarchy
+                || !slider.IsInteractable() || GetTopVcInstanceId(_activeManager) != item.Go.GetInstanceID())) return;
             float step = slider.wholeNumbers ? 1f : (slider.maxValue - slider.minValue) / 20f;
             float newValue = Mathf.Clamp(
                 slider.value + direction * step,
@@ -1837,6 +1949,21 @@ namespace DuelLinksAccess
                 ScreenReader.Say(Loc.Get("dialog_click_error"));
                 _items.RemoveAt(_focusIndex);
                 if (_focusIndex >= _items.Count) _focusIndex = Math.Max(0, _items.Count - 1);
+                return;
+            }
+
+            if (item.NativeAction != null)
+            {
+                try
+                {
+                    if (GetTopVcInstanceId(_activeManager) != item.Go.GetInstanceID()) return;
+                    item.NativeAction();
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Msg($"[CharacterSelect] activation failed: {ex.Message}");
+                    ScreenReader.Say(Loc.Get("dialog_click_error"));
+                }
                 return;
             }
 
@@ -2041,6 +2168,8 @@ namespace DuelLinksAccess
         {
             try
             {
+                if (PurchaseAccessibility.Activate(item.Go)) return true;
+
                 // Privacy Notice: "I've confirmed" has no click handlers.
                 // Must call PolicySettingsDialogViewController.OnConfirm() directly.
                 if (item.Label == "I've confirmed")
@@ -2067,24 +2196,27 @@ namespace DuelLinksAccess
                 if (confirmVc != null)
                 {
                     // Determine which button by label
-                    string label = item.Label?.ToUpperInvariant() ?? "";
-                    if (label == "NO" || label == "CANCEL" || label == "CLOSE"
-                        || label == "いいえ" || label == "キャンセル")
+                    string action = AccessibleUiPolicy.ConfirmationAction(item.Label)
+                        ?? AccessibleUiPolicy.SemanticAction(item.Go?.name);
+                    if (action == "cancel")
                     {
                         MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedNo()");
                         confirmVc.OnClickedNo();
                         ScreenReader.Say(item.Label);
                         return true;
                     }
-                    else if (label == "TRADE" || label == "YES" || label == "OK"
-                        || label == "EXCHANGE" || label == "CONFIRM"
-                        || label == "はい" || label == "交換")
+                    else if (action == "confirm")
                     {
                         MelonLogger.Msg("[Dialog] ConfirmDialog: calling OnClickedYes()");
                         confirmVc.OnClickedYes();
                         ScreenReader.Say(item.Label);
                         return true;
                     }
+                    // An unrecognized label must not fall through to generic
+                    // onClick: this controller requires its Yes/No methods.
+                    MelonLogger.Msg($"[Dialog] ConfirmDialog rejected unknown action: {item.Label}");
+                    ScreenReader.Say(Loc.Get("ui_confirmation_unknown"));
+                    return true;
                 }
             }
             catch (Exception ex)

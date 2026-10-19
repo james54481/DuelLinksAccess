@@ -1103,7 +1103,6 @@ namespace DuelLinksAccess
                 case CardTraderInfoBase.Type.SkillTicket:
                 case CardTraderInfoBase.Type.ExItem:
                 case CardTraderInfoBase.Type.Pack:
-                case CardTraderInfoBase.Type.Skill:
                     if (itemId > 0)
                     {
                         string n = "";
@@ -1111,6 +1110,10 @@ namespace DuelLinksAccess
                         if (!string.IsNullOrWhiteSpace(n)) return StripMarkup(n);
                     }
                     return TypeFallbackName(type);
+
+                // This trader service is a lottery, not a named Skill item.
+                case CardTraderInfoBase.Type.Skill:
+                    return Loc.Get("trader_skill_lottery");
 
                 case CardTraderInfoBase.Type.List:
                     return Loc.Get("trader_rarity_list", RarityLabel(item.rareId));

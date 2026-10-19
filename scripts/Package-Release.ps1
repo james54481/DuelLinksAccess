@@ -89,7 +89,7 @@ New-Item -ItemType Directory -Path (Join-Path $StageRoot "Mods") -Force | Out-Nu
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
 Copy-Item -LiteralPath $DllPath -Destination (Join-Path $StageRoot "Mods")
-Copy-Item -LiteralPath (Join-Path $ProjectRoot "LICENSE") -Destination $StageRoot
+Copy-Item -LiteralPath (Join-Path $ProjectRoot "LICENSE.txt") -Destination $StageRoot
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.md") -Destination $StageRoot
 Copy-Item -LiteralPath (Join-Path $ProjectRoot "release\README.txt") -Destination $StageRoot
 

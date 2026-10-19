@@ -38,6 +38,9 @@ namespace DuelLinksAccess
 
         private Category _currentCategory = Category.Cards;
         private int _focusIndex;
+        private readonly List<PurchaseButton> _purchaseActions = new();
+        private int _purchaseActionIndex;
+        private bool _purchaseActionMode;
 
         // Cached item list for current category
         private readonly List<MerchViewContentItem> _currentItems = new();
@@ -117,6 +120,8 @@ namespace DuelLinksAccess
             _wasActive = true;
             IsActive = true;
             _focusIndex = 0;
+            _purchaseActionMode = false;
+            _purchaseActions.Clear();
             _initialScanDone = false;
             _initialScanDelay = 1.0f;
             _initialScanAttempts = 0;
@@ -454,6 +459,16 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            if (_purchaseActionMode)
+            {
+                ProcessPurchaseActions();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.B))
+            {
+                OpenPurchaseActions();
+                return;
+            }
             // Tab / Shift+Tab — switch category
             if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
@@ -562,6 +577,75 @@ namespace DuelLinksAccess
         #endregion
 
         #region Navigation
+
+        private void OpenPurchaseActions()
+        {
+            _purchaseActions.Clear();
+            if (_focusIndex < 0 || _focusIndex >= _currentItems.Count) return;
+            var item = _currentItems[_focusIndex];
+            if (item == null) return;
+            _purchaseActions.AddRange(PurchaseAccessibility.Find(item.gameObject));
+            if (_purchaseActions.Count == 0)
+            {
+                ScreenReader.Say(Loc.Get("ui_shop_no_actions"));
+                return;
+            }
+            _purchaseActionMode = true;
+            _purchaseActionIndex = 0;
+            AnnouncePurchaseAction();
+        }
+
+        private void AnnouncePurchaseAction()
+        {
+            var button = _purchaseActions[_purchaseActionIndex];
+            ScreenReader.Say(Loc.Get("ui_shop_action", _purchaseActionIndex + 1,
+                _purchaseActions.Count, PurchaseAccessibility.Label(button)));
+        }
+
+        private void ProcessPurchaseActions()
+        {
+            if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
+                || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
+            {
+                _purchaseActionMode = false;
+                _purchaseActions.Clear();
+                AnnounceCurrentItem();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.LeftArrow)
+                || InputManager.TryConsumeKeyDown(KeyCode.UpArrow))
+            {
+                _purchaseActionIndex = (_purchaseActionIndex + _purchaseActions.Count - 1) % _purchaseActions.Count;
+                AnnouncePurchaseAction();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.RightArrow)
+                || InputManager.TryConsumeKeyDown(KeyCode.DownArrow))
+            {
+                _purchaseActionIndex = (_purchaseActionIndex + 1) % _purchaseActions.Count;
+                AnnouncePurchaseAction();
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
+            {
+                if (_operationCooldown > 0f) return;
+                var button = _purchaseActions[_purchaseActionIndex];
+                if (!PurchaseAccessibility.IsAvailable(button))
+                {
+                    ScreenReader.Say(Loc.Get("ui_action_unavailable"));
+                    _purchaseActionMode = false;
+                    return;
+                }
+                // One native action for the explicitly chosen option.
+                button.OnTouch();
+                _purchaseActionMode = false;
+                _operationCooldown = OperationCooldownTime;
+                return;
+            }
+            if (InputManager.TryConsumeKeyDown(KeyCode.Tab)) AnnouncePurchaseAction();
+            if (InputManager.TryConsumeKeyDown(KeyCode.Space)) OpenPurchaseActions();
+        }
 
         private void SwitchCategoryNext()
         {

@@ -1,6 +1,5 @@
-using System.Reflection;
-using System.Text.RegularExpressions;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace DuelLinksAccess.Tests;
@@ -8,97 +7,56 @@ namespace DuelLinksAccess.Tests;
 public sealed class LocalizationCatalogTests
 {
     private static readonly Regex LiteralLookupRegex = new(
-        "Loc\\.Get\\(\\s*\"(?<key>[^\"]+)\"",
-        RegexOptions.Compiled);
-    private static readonly Regex DefinitionRegex = new(
-        "_english\\[\"(?<key>[^\"]+)\"\\]\\s*=",
-        RegexOptions.Compiled);
+        "Loc\\.Get\\(\\s*\"(?<key>[^\"]+)\"", RegexOptions.Compiled);
 
-    [Fact]
-    public void Catalog_HasNoDuplicateDefinitions()
+    [Theory]
+    [InlineData("en", 530)]
+    [InlineData("zh-TW", 530)]
+    public void Catalog_HasNoDuplicateDefinitions(string locale, int count)
     {
-        string locSource = File.ReadAllText(
-            Path.Combine(FindRepositoryRoot(), "src", "Loc.cs"));
-        string[] keys = DefinitionRegex.Matches(locSource)
-            .Select(match => match.Groups["key"].Value)
-            .ToArray();
-        string[] duplicates = keys.GroupBy(key => key)
-            .Where(group => group.Count() > 1)
-            .Select(group => group.Key)
-            .OrderBy(key => key)
-            .ToArray();
-
-        Assert.Empty(duplicates);
+        // ReadCatalog rejects duplicate JSON keys rather than silently overwriting.
+        Assert.Equal(count, LocalizationCatalog.ReadCatalog(locale).Count);
     }
 
     [Fact]
     public void Catalog_DefinesEveryLiteralLookup()
     {
         string root = FindRepositoryRoot();
-        string locSource = File.ReadAllText(Path.Combine(root, "src", "Loc.cs"));
-        var definitions = DefinitionRegex.Matches(locSource)
-            .Select(match => match.Groups["key"].Value)
-            .ToHashSet(StringComparer.Ordinal);
-        string[] missing = Directory.GetFiles(
-                Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.EndsWith(
-                Path.Combine("src", "Loc.cs"),
-                StringComparison.OrdinalIgnoreCase))
+        var definitions = LocalizationCatalog.ReadCatalog("en");
+        string[] missing = Directory.GetFiles(Path.Combine(root, "src"), "*.cs",
+                SearchOption.AllDirectories)
             .SelectMany(path => LiteralLookupRegex.Matches(File.ReadAllText(path)))
-            .Select(match => match.Groups["key"].Value)
-            .Distinct(StringComparer.Ordinal)
-            .Where(key => !definitions.Contains(key))
-            .OrderBy(key => key)
-            .ToArray();
-
+            .Select(match => match.Groups["key"].Value).Distinct(StringComparer.Ordinal)
+            .Where(key => !definitions.ContainsKey(key)).OrderBy(key => key).ToArray();
         Assert.Empty(missing);
     }
 
-    [Fact]
-    public void Catalog_HasValidCompositeFormatStrings()
+    [Theory]
+    [InlineData("en")]
+    [InlineData("zh-TW")]
+    public void Catalog_HasValidCompositeFormatStrings(string locale)
     {
-        Loc.Initialize();
-        var field = typeof(Loc).GetField(
-            "_english", BindingFlags.Static | BindingFlags.NonPublic);
-        var catalog = Assert.IsType<Dictionary<string, string>>(
-            field?.GetValue(null));
-        object[] arguments = Enumerable.Range(0, 100)
-            .Cast<object>()
-            .ToArray();
-
-        string[] invalid = catalog
-            .Where(entry => !CanFormat(entry.Value, arguments))
-            .Select(entry => entry.Key)
-            .OrderBy(key => key)
-            .ToArray();
-
+        object[] arguments = Enumerable.Range(0, 100).Cast<object>().ToArray();
+        var invalid = LocalizationCatalog.ReadCatalog(locale)
+            .Where(entry => !CanFormat(entry.Value, arguments)).Select(entry => entry.Key);
         Assert.Empty(invalid);
     }
 
     private static bool CanFormat(string template, object[] arguments)
     {
-        try
-        {
-            string.Format(CultureInfo.InvariantCulture, template, arguments);
-            return true;
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
+        try { string.Format(CultureInfo.InvariantCulture, template, arguments); return true; }
+        catch (FormatException) { return false; }
     }
 
-    private static string FindRepositoryRoot()
+    internal static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory != null)
         {
-            if (File.Exists(Path.Combine(directory.FullName,
-                    "DuelLinksAccess.csproj")))
+            if (File.Exists(Path.Combine(directory.FullName, "DuelLinksAccess.csproj")))
                 return directory.FullName;
             directory = directory.Parent;
         }
-
         throw new DirectoryNotFoundException("Repository root not found");
     }
 }

@@ -35,3 +35,16 @@ Desktop.ini
 *.exe
 *.pdb
 nul
+
+# Local test runs, diagnostic evidence and historical development packages
+/TestResults/
+/docs/evidence/
+/release/zhTW-*/
+/dist/updater-*/
+/settings-duel-audit-*.txt
+/docs/COMPLETE-zh-TW-REPORT.md
+/docs/INVARIANT-CULTURE-FIX.zh-TW.md
+/docs/PHASE1-REPORT.zh-TW.md
+/docs/SUMMON-DIALOG-FIX-*.zh-TW.md
+/docs/TICKET-EXTRA-FIX-*.zh-TW.md
+/docs/UI-ACCESSIBILITY-FIXES-*.zh-TW.md

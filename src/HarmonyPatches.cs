@@ -35,6 +35,8 @@ namespace DuelLinksAccess
                 PatchUserTutorialDialog(harmony);
                 PatchTutorialManagerFetch(harmony);
                 PatchTutorialManagerNotificator(harmony);
+                SummonDiagnostics.Register(harmony);
+                CharacterPortraitBindings.Register(harmony);
 
                 _applied = HarmonyPatchPolicy.RequiredPatchesApplied(
                     push, pop, runEffect);
@@ -264,6 +266,7 @@ namespace DuelLinksAccess
             try
             {
                 DuelEventAnnouncer.OnRunEffect(id, param1, param2, param3);
+                SummonDiagnostics.ObserveEffect(id, param1, param2, param3);
             }
             catch (Exception ex)
             {

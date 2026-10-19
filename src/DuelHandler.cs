@@ -35,6 +35,8 @@ namespace DuelLinksAccess
         private readonly DuelEventLog _eventLog = new();
         private readonly DuelFieldNavigator _fieldNav = new();
         private readonly AutomaticDrawController _automaticDraw = new();
+        private readonly DuelPullDownHandler _duelPullDown = new();
+        private readonly DuelSkillHandler _skill = new();
         private bool _wasActive;
         private bool _tutorialArrowAnnounced;
         private bool _tutorialArrowDismissAttempted;
@@ -44,9 +46,7 @@ namespace DuelLinksAccess
         private Il2Cpp.DuelEndMessage _duelEndMessage;
 
         // Duel yes/no dialog (DuelCommonDialog) — tribute summon confirmation, etc.
-        private bool _yesNoDialogAnnounced;
-        private string _lastYesNoText = "";
-        private float _yesNoCooldown; // Grace period after OnButton — game doesn't clear text immediately
+        private readonly DuelConfirmationState _yesNoState = new();
 
         // Battle position dialog — ATK or DEF position choice
         private bool _bpDialogAnnounced;
@@ -58,6 +58,12 @@ namespace DuelLinksAccess
         private bool _selEffAnnounced;
         private int _selEffIndex;
         private float _selEffCooldown; // Grace period after confirm/cancel
+        private int _selEffDialogId = -1;
+        private int _selEffPendingFrames;
+        private bool _selEffViewingAnnounced;
+        private string _selEffTabSignature = "";
+        private int _selEffVerifiedIndex = -1;
+        private string _selEffVerifiedText = "";
 
         #endregion
 
@@ -69,6 +75,8 @@ namespace DuelLinksAccess
         /// </summary>
         public bool IsActive => DuelEventAnnouncer.InDuel
             || GameStateTracker.CurrentScreen == GameScreen.Duel;
+
+        public bool IsConfirmationActive { get; private set; }
 
         #endregion
 
@@ -89,6 +97,7 @@ namespace DuelLinksAccess
         /// </summary>
         public void Update()
         {
+            IsConfirmationActive = false;
             if (!IsActive)
             {
                 if (_wasActive)
@@ -99,6 +108,7 @@ namespace DuelLinksAccess
                     _eventLog.Clear();
                     _fieldNav.Reset();
                     _automaticDraw.Reset();
+                    _skill.Reset();
                     _tutorialArrowAnnounced = false;
                     _tutorialArrowDismissAttempted = false;
                     DuelEventAnnouncer.Reset();
@@ -113,19 +123,41 @@ namespace DuelLinksAccess
                 _tutorialArrowDismissAttempted = false;
                 _duelResultScanned = false;
                 _duelEndMessage = null;
-                _yesNoDialogAnnounced = false;
-                _lastYesNoText = "";
-                _yesNoCooldown = 0f;
+                _yesNoState.Reset();
                 _selEffAnnounced = false;
                 _selEffIndex = 0;
                 _selEffCooldown = 0f;
                 _eventLog.Clear();
                 _fieldNav.Reset();
                 _automaticDraw.Reset();
+                _skill.Reset();
             }
 
-            UpdateAutomaticDraw();
-            CompleteAutomaticDrawPresentation();
+            bool eligibleSkillDraw = IsAutomaticDrawEligible();
+            _skill.Observe(eligibleSkillDraw);
+
+            // Visible yes/no prompts own input even while browsing the event log.
+            if (HandleDuelYesNoDialog()) return;
+
+            // Native quantity/option prompts must own keys before log and field navigation.
+            if (_duelPullDown.Update()) { IsConfirmationActive = true; return; }
+
+            // Effect selection owns navigation, including its field-view mode.
+            if (HandleSelectEffectDialog()) return;
+
+            bool skillInputAllowed = GameStateTracker.CurrentScreen != GameScreen.Dialog
+                && !_fieldNav.InEmotionalList && !_fieldNav.InCardSelect
+                && !_fieldNav.InActionMenu && !_fieldNav.InTargetMode
+                && DuelEventAnnouncer.InDuel && !DuelEventAnnouncer.DuelEnded
+                && DuelState.CurrentTurnPlayer == DuelState.MyPlayerNum();
+            if (skillInputAllowed && _skill.ProcessInput(eligibleSkillDraw, true))
+            { IsConfirmationActive = true; return; }
+            if (!_skill.BlockAutomaticDraw)
+            {
+                UpdateAutomaticDraw();
+                CompleteAutomaticDrawPresentation();
+            }
+            else _automaticDraw.Reset();
 
             // Log browsing mode takes priority for navigation keys
             if (_eventLog.IsBrowsing)
@@ -187,16 +219,11 @@ namespace DuelLinksAccess
                 }
             }
 
-            // Duel yes/no dialog (DuelCommonDialog) — tribute summon confirmation, etc.
-            // This is NOT a standard VC/Htjson dialog, it's a MonoBehaviour inside the duel.
-            if (HandleDuelYesNoDialog()) return;
-
             // Battle position dialog — ATK or DEF position choice during normal summon.
             if (HandleBattlePositionDialog()) return;
 
             // Multi-effect picker (SelectEffectDialog) — choose which of a card's
             // effects to activate. Tabbed dialog with its own OK/confirm button.
-            if (HandleSelectEffectDialog()) return;
 
             // Field navigation — most keys suppressed when a dialog overlay is active
             // so DialogHandler can handle duel dialogs (Yes/No, card selection).
@@ -280,7 +307,7 @@ namespace DuelLinksAccess
 
         private void ProcessDuelKeys()
         {
-            if (IsAutomaticDrawEligible()
+            if (!_skill.BlockAutomaticDraw && IsAutomaticDrawEligible()
                 && InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
                 try
@@ -582,69 +609,42 @@ namespace DuelLinksAccess
             // because resumed duels never fire DuelStart so InDuel stays false.
             if (!IsActive) return false;
 
-            // After calling OnButton, the game doesn't clear dlgText immediately.
-            // Skip checks during the cooldown so the user can proceed (e.g., select
-            // tribute materials) without the stale text blocking input.
-            if (_yesNoCooldown > 0f)
-            {
-                _yesNoCooldown -= Time.deltaTime;
-                return false;
-            }
-
             try
             {
                 var client = Il2CppYgomGame.Duel.DuelClient.instance;
                 var worker = client?.worker2d;
                 var dlg = worker?.yesnoDialog;
 
-                if (dlg == null || dlg.content == null || !dlg.content.activeSelf)
-                {
-                    // Dialog closed — reset tracking
-                    if (_yesNoDialogAnnounced)
-                    {
-                        _yesNoDialogAnnounced = false;
-                        _lastYesNoText = "";
-                    }
-                    return false;
-                }
-
-                // The game keeps DuelCommonDialog content active during the entire duel
-                // but only populates dlgText when a real yes/no prompt is showing.
-                // Treat empty text as inactive to avoid intercepting other dialogs' keys.
                 string text = "";
-                try
-                {
-                    text = SpeechTextFormatter.StripRichText(
-                        dlg.dlgText?.text ?? "");
-                }
+                try { text = SpeechTextFormatter.StripRichText(dlg?.dlgText?.text ?? ""); }
                 catch { }
 
-                if (string.IsNullOrEmpty(text))
-                {
-                    if (_yesNoDialogAnnounced)
-                    {
-                        _yesNoDialogAnnounced = false;
-                        _lastYesNoText = "";
-                    }
-                    return false;
-                }
-
-                // If the text is the same as what we already responded to, the game
-                // hasn't cleared it yet — don't re-activate. Only activate on NEW text.
-                if (text == _lastYesNoText && !_yesNoDialogAnnounced)
+                bool visible = dlg != null && dlg.content != null
+                    && dlg.content.activeInHierarchy;
+                if (!_yesNoState.Observe(visible, text, Time.unscaledTime, out bool announce))
                     return false;
 
-                // Dialog is active with real text — read if not yet announced
-                if (!_yesNoDialogAnnounced)
+                IsConfirmationActive = true;
+
+                if (announce)
                 {
-                    _yesNoDialogAnnounced = true;
-                    _lastYesNoText = text;
                     ScreenReader.Say(Loc.Get("duel_yesno_prompt", text));
-
-                    DebugLogger.Log(LogCategory.Game, "DuelHandler",
-                        $"DuelCommonDialog active: text='{text}'");
+                    MelonLoader.MelonLogger.Msg($"[DuelConfirm] Visible prompt: {text}");
                 }
 
+                // Keep modal ownership during callback grace time. Do not let
+                // Enter/Escape fall through to phase or card actions underneath.
+                if (!_yesNoState.CanRespond(Time.unscaledTime))
+                {
+                    InputManager.TryConsumeKeyDown(KeyCode.Return);
+                    InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter);
+                    InputManager.TryConsumeKeyDown(KeyCode.Space);
+                    InputManager.TryConsumeKeyDown(KeyCode.Escape);
+                    return true;
+                }
+
+                if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
+                    ScreenReader.Say(Loc.Get("duel_yesno_prompt", text));
                 // Enter/Space = Yes
                 if (InputManager.TryConsumeKeyDown(KeyCode.Return)
                     || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
@@ -652,10 +652,10 @@ namespace DuelLinksAccess
                 {
                     DebugLogger.Log(LogCategory.Game, "DuelHandler",
                         "DuelCommonDialog: calling OnButton(0) (Yes)");
+                    MelonLoader.MelonLogger.Msg("[DuelConfirm] User chose Yes (0)");
                     dlg.OnButton(0);
                     ScreenReader.Say(Loc.Get("duel_yes"));
-                    _yesNoDialogAnnounced = false;
-                    _yesNoCooldown = 0.5f;
+                    _yesNoState.Responded(Time.unscaledTime);
                     return true;
                 }
 
@@ -664,10 +664,10 @@ namespace DuelLinksAccess
                 {
                     DebugLogger.Log(LogCategory.Game, "DuelHandler",
                         "DuelCommonDialog: calling OnButton(1) (No)");
+                    MelonLoader.MelonLogger.Msg("[DuelConfirm] User chose No (1)");
                     dlg.OnButton(1);
                     ScreenReader.Say(Loc.Get("duel_no"));
-                    _yesNoDialogAnnounced = false;
-                    _yesNoCooldown = 0.5f;
+                    _yesNoState.Responded(Time.unscaledTime);
                     return true;
                 }
 
@@ -779,14 +779,6 @@ namespace DuelLinksAccess
         {
             if (!IsActive) return false;
 
-            // Grace period after confirm/cancel — the game doesn't tear the
-            // dialog down instantly, so skip checks briefly to avoid re-entry.
-            if (_selEffCooldown > 0f)
-            {
-                _selEffCooldown -= Time.deltaTime;
-                return false;
-            }
-
             try
             {
                 var client = Il2CppYgomGame.Duel.DuelClient.instance;
@@ -794,18 +786,57 @@ namespace DuelLinksAccess
                 var dlg = worker?.selEffDialog;
 
                 var content = dlg?.content;
-                if (dlg == null || content == null || !content.activeInHierarchy)
+                if (dlg == null || !dlg.gameObject.activeInHierarchy)
                 {
-                    if (_selEffAnnounced)
-                    {
-                        _selEffAnnounced = false;
-                        _selEffIndex = 0;
-                    }
+                    ResetEffectChoice();
                     return false;
+                }
+
+                if (dlg.viewing)
+                {
+                    IsConfirmationActive = true;
+                    if (!_selEffViewingAnnounced)
+                    {
+                        _selEffViewingAnnounced = true;
+                        ScreenReader.Say(Loc.Get("duel_effect_field_return"));
+                        MelonLoader.MelonLogger.Msg("[EffectChoice] field view active");
+                    }
+                    if (InputManager.TryConsumeKeyDown(KeyCode.Return)
+                        || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
+                        || InputManager.TryConsumeKeyDown(KeyCode.Space)
+                        || InputManager.TryConsumeKeyDown(KeyCode.Escape))
+                    {
+                        dlg.OnBack();
+                        _selEffAnnounced = false;
+                        _selEffPendingFrames = 0;
+                        MelonLoader.MelonLogger.Msg("[EffectChoice] requested OnBack from field view");
+                    }
+                    return true;
+                }
+                _selEffViewingAnnounced = false;
+                if (content == null || !content.activeInHierarchy)
+                {
+                    ResetEffectChoice();
+                    return false;
+                }
+                IsConfirmationActive = true;
+                if (_selEffCooldown > 0f)
+                {
+                    _selEffCooldown -= Time.deltaTime;
+                    return true;
                 }
 
                 var tabs = GetEffectTabs(dlg);
                 int count = tabs.Count;
+                string signature = string.Join(",", tabs.ConvertAll(t => t.GetInstanceID().ToString()));
+                if (_selEffDialogId != dlg.GetInstanceID() || signature != _selEffTabSignature)
+                {
+                    _selEffAnnounced = false;
+                    _selEffPendingFrames = 0;
+                    _selEffVerifiedIndex = -1;
+                    _selEffDialogId = dlg.GetInstanceID();
+                    _selEffTabSignature = signature;
+                }
 
                 // First detection — announce and dump the structure so the first
                 // live encounter either works or reveals the exact tab layout.
@@ -813,26 +844,50 @@ namespace DuelLinksAccess
                 {
                     _selEffAnnounced = true;
                     int sel = SafeSelectedIdx(dlg);
-                    _selEffIndex = (count > 0 && sel >= 0 && sel < count) ? sel : 0;
+                    _selEffIndex = sel >= 0 && sel < count ? sel : -1;
+                    _selEffVerifiedIndex = _selEffIndex;
 
                     DumpSelectEffectState(dlg, tabs);
 
                     string info = StripText(dlg.infoText);
                     string eff = StripText(dlg.effectText);
+                    _selEffVerifiedText = eff;
                     if (count > 1)
                         ScreenReader.Say(Loc.Get("duel_effect_intro",
                             info, _selEffIndex + 1, count, eff));
-                    else
+                    else if (count == 1)
                         ScreenReader.Say(Loc.Get("duel_effect_single", info, eff));
+                    else
+                        ScreenReader.Say(Loc.Get("duel_effect_unavailable"));
+                    MelonLoader.MelonLogger.Msg($"[EffectChoice] open tabs={count} selected={sel} text={eff}");
+                }
+
+                // Native tabs may apply their change on the next Update. Until the
+                // readback matches, Enter must never confirm the old/default effect.
+                if (_selEffPendingFrames > 0)
+                {
+                    _selEffPendingFrames--;
+                    int actual = SafeSelectedIdx(dlg);
+                    if (actual == _selEffIndex && !string.IsNullOrWhiteSpace(StripText(dlg.effectText)))
+                    {
+                        _selEffPendingFrames = 0;
+                        _selEffVerifiedIndex = actual;
+                        _selEffVerifiedText = StripText(dlg.effectText);
+                        AnnounceEffect(dlg, tabs);
+                        MelonLoader.MelonLogger.Msg($"[EffectChoice] selected requested={_selEffIndex} actual={actual} text={StripText(dlg.effectText)}");
+                    }
+                    else if (_selEffPendingFrames == 0)
+                    {
+                        ScreenReader.Say(Loc.Get("duel_effect_mismatch"));
+                        MelonLoader.MelonLogger.Msg($"[EffectChoice] selection failed requested={_selEffIndex} actual={actual}");
+                    }
                 }
 
                 // Up = previous effect
                 if (count > 1
                     && InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
                 {
-                    _selEffIndex = (_selEffIndex - 1 + count) % count;
-                    SelectEffectTab(tabs, _selEffIndex);
-                    AnnounceEffect(dlg, tabs);
+                    RequestEffectTab(dlg, tabs, -1);
                     return true;
                 }
 
@@ -840,9 +895,7 @@ namespace DuelLinksAccess
                 if (count > 1
                     && InputManager.TryConsumeKeyDownOrRepeat(KeyCode.DownArrow))
                 {
-                    _selEffIndex = (_selEffIndex + 1) % count;
-                    SelectEffectTab(tabs, _selEffIndex);
-                    AnnounceEffect(dlg, tabs);
+                    RequestEffectTab(dlg, tabs, 1);
                     return true;
                 }
 
@@ -851,6 +904,20 @@ namespace DuelLinksAccess
                     || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
                     || InputManager.TryConsumeKeyDown(KeyCode.Space))
                 {
+                    var ok = dlg.okButton;
+                    var ok2 = dlg.okButton2;
+                    bool enabled = (ok != null && ok.gameObject.activeInHierarchy && ok.interactable)
+                        || (ok2 != null && ok2.gameObject.activeInHierarchy && ok2.interactable);
+                    int actual = SafeSelectedIdx(dlg);
+                    if (!EffectChoicePolicy.CanConfirm(count, _selEffIndex, actual,
+                        EffectChoicePolicy.DescriptionMatches(_selEffVerifiedText, StripText(dlg.effectText)), enabled,
+                        _selEffPendingFrames > 0, dlg.viewing, _selEffVerifiedIndex == _selEffIndex))
+                    {
+                        ScreenReader.Say(Loc.Get("duel_effect_mismatch"));
+                        MelonLoader.MelonLogger.Msg($"[EffectChoice] confirm blocked tabs={count} requested={_selEffIndex} actual={actual} enabled={enabled}");
+                        return true;
+                    }
+                    MelonLoader.MelonLogger.Msg($"[EffectChoice] confirm selected={actual} text={StripText(dlg.effectText)}");
                     DebugLogger.Log(LogCategory.Game, "DuelHandler",
                         $"SelectEffectDialog: OnClickOk() selectedIdx={SafeSelectedIdx(dlg)}");
                     dlg.OnClickOk();
@@ -886,16 +953,51 @@ namespace DuelLinksAccess
             }
             catch (System.Exception ex)
             {
-                DebugLogger.Log(LogCategory.Game, "DuelHandler",
-                    $"SelectEffectDialog error: {ex.Message}");
-                return false;
+                MelonLoader.MelonLogger.Msg($"[EffectChoice] error: {ex.Message}");
+                // Do not send the same key into field navigation after a picker error.
+                return IsConfirmationActive;
             }
+        }
+
+        private void ResetEffectChoice()
+        {
+            _selEffAnnounced = false;
+            _selEffIndex = -1;
+            _selEffDialogId = -1;
+            _selEffPendingFrames = 0;
+            _selEffVerifiedIndex = -1;
+            _selEffVerifiedText = "";
+            _selEffViewingAnnounced = false;
+            _selEffTabSignature = "";
+            _selEffCooldown = 0f;
+        }
+
+        private void RequestEffectTab(Il2CppYgomGame.Duel.SelectEffectDialog dlg,
+            System.Collections.Generic.List<GameObject> tabs, int direction)
+        {
+            int target = EffectChoicePolicy.Move(tabs.Count, SafeSelectedIdx(dlg), direction);
+            _selEffIndex = target;
+            _selEffVerifiedIndex = -1;
+            _selEffVerifiedText = "";
+            _selEffPendingFrames = 0;
+            if (target < 0 || !SelectEffectTab(tabs, target))
+            {
+                ScreenReader.Say(Loc.Get("duel_effect_mismatch"));
+                return;
+            }
+            _selEffPendingFrames = 30;
+            MelonLoader.MelonLogger.Msg($"[EffectChoice] request target={target} tab={tabs[target].name}");
         }
 
         /// <summary>Announces the currently focused effect (number + description).</summary>
         private void AnnounceEffect(Il2CppYgomGame.Duel.SelectEffectDialog dlg,
             System.Collections.Generic.List<GameObject> tabs)
         {
+            if (_selEffPendingFrames > 0 || SafeSelectedIdx(dlg) != _selEffIndex)
+            {
+                ScreenReader.Say(Loc.Get("duel_effect_mismatch"));
+                return;
+            }
             string eff = StripText(dlg.effectText);
             // Fall back to the tab's own label when effectText is empty.
             if (string.IsNullOrWhiteSpace(eff)
@@ -906,8 +1008,8 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Collects the effect tabs — active direct children of tabParent that
-        /// carry an interactive control. Order matches on-screen tab order.
+        /// Collects native effect tabs, including nested layout containers.
+        /// Native selectedIdx readback must match before confirmation.
         /// </summary>
         private static System.Collections.Generic.List<GameObject> GetEffectTabs(
             Il2CppYgomGame.Duel.SelectEffectDialog dlg)
@@ -917,26 +1019,24 @@ namespace DuelLinksAccess
             {
                 var parent = dlg.tabParent;
                 if (parent == null) return list;
-                int n = parent.childCount;
-                for (int i = 0; i < n; i++)
+                // The game's tabs need not inherit Unity Button/Toggle and can
+                // be nested inside layout containers. Prefer the native control.
+                foreach (var tab in parent.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTabButton>(false))
                 {
-                    var child = parent.GetChild(i);
-                    if (child == null) continue;
-                    var go = child.gameObject;
-                    if (go == null || !go.activeSelf) continue;
-                    if (HasInteractive(go)) list.Add(go);
+                    if (tab != null && tab.gameObject.activeInHierarchy)
+                        list.Add(tab.gameObject);
                 }
+                if (list.Count > 0) return list;
+                foreach (var toggle in parent.GetComponentsInChildren<UnityEngine.UI.Toggle>(false))
+                    if (toggle != null && toggle.gameObject.activeInHierarchy)
+                        list.Add(toggle.gameObject);
+                if (list.Count > 0) return list;
+                foreach (var button in parent.GetComponentsInChildren<UnityEngine.UI.Button>(false))
+                    if (button != null && button.gameObject.activeInHierarchy)
+                        list.Add(button.gameObject);
             }
             catch { }
             return list;
-        }
-
-        /// <summary>True if the GO (or a descendant) has a Toggle or Button.</summary>
-        private static bool HasInteractive(GameObject go)
-        {
-            try { if (go.GetComponentInChildren<UnityEngine.UI.Toggle>(true) != null) return true; } catch { }
-            try { if (go.GetComponentInChildren<UnityEngine.UI.Button>(true) != null) return true; } catch { }
-            return false;
         }
 
         /// <summary>
@@ -945,19 +1045,32 @@ namespace DuelLinksAccess
         /// effectText). Toggles are preferred (tabs are usually radio toggles);
         /// a Button click is the fallback.
         /// </summary>
-        private static void SelectEffectTab(
+        private static bool SelectEffectTab(
             System.Collections.Generic.List<GameObject> tabs, int index)
         {
-            if (index < 0 || index >= tabs.Count) return;
+            if (index < 0 || index >= tabs.Count) return false;
             var go = tabs[index];
-            if (go == null) return;
+            if (go == null || !go.activeInHierarchy) return false;
             try
             {
+                var eventData = new UnityEngine.EventSystems.PointerEventData(
+                    UnityEngine.EventSystems.EventSystem.current);
+                var nativeTab = go.GetComponent<Il2CppYgomSystem.UI.YgomTabButton>();
+                if (nativeTab != null)
+                {
+                    nativeTab.OnPointerClick(eventData);
+                    return true;
+                }
                 var toggle = go.GetComponentInChildren<UnityEngine.UI.Toggle>(true);
-                if (toggle != null) { toggle.isOn = true; return; }
+                if (toggle != null)
+                {
+                    if (!toggle.IsInteractable()) return false;
+                    toggle.OnPointerClick(eventData);
+                    return true;
+                }
 
                 var btn = go.GetComponentInChildren<UnityEngine.UI.Button>(true);
-                if (btn != null) { btn.onClick.Invoke(); return; }
+                if (btn != null && btn.IsInteractable()) { btn.OnPointerClick(eventData); return true; }
 
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"SelectEffectTab: no interactive on tab {index} ('{go.name}')");
@@ -967,6 +1080,7 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Game, "DuelHandler",
                     $"SelectEffectTab error: {ex.Message}");
             }
+            return false;
         }
 
         /// <summary>Reads dlg.selectedIdx defensively (-1 on failure).</summary>

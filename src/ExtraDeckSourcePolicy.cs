@@ -1,7 +1,20 @@
 namespace DuelLinksAccess
 {
+    public enum ExtraDeckDataSource { Registered, Engine, LiveStack, Locators }
+
     public static class ExtraDeckSourcePolicy
     {
+        public static ExtraDeckDataSource ChooseSource(bool engineAvailable,
+            bool placeAvailable, bool placeLoaded, int liveCount, int innerCount)
+        {
+            if (engineAvailable) return ExtraDeckDataSource.Engine;
+            // A partial pile is not a complete deck. Do not use its count.
+            if (placeAvailable && placeLoaded && liveCount >= 0)
+                return liveCount > 0 && innerCount == liveCount
+                    ? ExtraDeckDataSource.LiveStack : ExtraDeckDataSource.Locators;
+            return ExtraDeckDataSource.Registered;
+        }
+
         /// <summary>
         /// Decides whether the visual layer's DeckCardPlace stack is
         /// authoritative for the Extra Deck. CardPlace.isLoaded only says

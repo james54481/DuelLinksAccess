@@ -1,5 +1,7 @@
 # Duel Links Access
 
+Traditional Chinese maintenance branch: [繁體中文說明](README.zh-TW.md) · [修改與驗證狀態](CHANGELOG.zh-TW.md). Based on upstream v1.4.2; not an official upstream release.
+
 Duel Links Access is an accessibility mod for the Steam version of Yu-Gi-Oh! Duel Links. It adds keyboard navigation and screen reader output to many common game flows.
 
 The mod is alpha software. Solo duels, much of the tutorial, deck editing, common shops, ticket exchange, missions, Duel Trials, and parts of Duel World are accessible. Some screens still expose unlabeled controls or require the generic browse-all fallback. Image-only selectors and new game content may need more work after a Duel Links update.
@@ -18,11 +20,11 @@ NVDA is the packaged and tested screen reader path. Tolk supports other screen r
 1. Install MelonLoader for `dlpc.exe` in the Duel Links folder. Launch the game once so MelonLoader generates its assemblies.
 2. Download Tolk from the URL in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and verify the ZIP SHA-256.
 3. From the Tolk archive's `x64` folder, put `Tolk.dll` and `nvdaControllerClient64.dll` beside `dlpc.exe`.
-4. Download the current `DuelLinksAccess-vX.Y.Z.zip` from [GitHub Releases](https://github.com/zersiax/DuelLinksAccess/releases).
+4. Download the current `DuelLinksAccess-vX.Y.Z.zip` from [GitHub Releases](https://github.com/james54481/DuelLinksAccess/releases).
 5. Extract `Mods/DuelLinksAccess.dll` into the game's `Mods` folder.
 6. Start NVDA, then start Duel Links. The mod should announce that it loaded.
 
-The release archive does not redistribute Tolk, MelonLoader, screen reader client libraries, or game files.
+The module packaging script includes the verified x64 Tolk and NVDA controller libraries with their licenses. The independent updater package includes only the updater, its .NET runtime and required notices; it updates an existing module installation. See [updater instructions](docs/UPDATER.zh-TW.md). Neither package includes MelonLoader or game files.
 
 ## Controls
 
@@ -120,4 +122,4 @@ The full mod build requires local MelonLoader and generated Duel Links IL2CPP as
 
 ## License
 
-Duel Links Access source code is licensed under the MIT License. See [LICENSE](LICENSE). Runtime dependencies use their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Duel Links Access source code is licensed under the MIT License. See [LICENSE](LICENSE.txt). Runtime dependencies use their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

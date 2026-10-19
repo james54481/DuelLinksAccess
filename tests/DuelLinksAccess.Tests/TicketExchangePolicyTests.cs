@@ -5,6 +5,14 @@ namespace DuelLinksAccess.Tests;
 public sealed class TicketExchangePolicyTests
 {
     [Theory]
+    [InlineData(true, true, true, true)]
+    [InlineData(true, false, true, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(false, true, true, false)]
+    public void NativeControlRequiresVisibleEnabledButton(bool present, bool active, bool enabled, bool expected)
+        => Assert.Equal(expected, TicketExchangePolicy.IsUsable(present, active, enabled));
+
+    [Theory]
     // decideButton present: it is the mode's real gate and wins outright.
     [InlineData(true, true, false, false, TicketExchangeAction.ConfirmViaDecide)]
     [InlineData(true, false, false, false, TicketExchangeAction.Reject)]

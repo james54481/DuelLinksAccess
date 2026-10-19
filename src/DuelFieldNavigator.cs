@@ -329,6 +329,8 @@ namespace DuelLinksAccess
         /// <summary>Resets all navigation state. Call on duel end.</summary>
         public void Reset()
         {
+            _openingExtraPicker = false;
+            _extraPickerGeneration++;
             _currentZone = Zone.Hand;
             _currentRow = RowHand;
             _currentCol = 0;
@@ -371,6 +373,7 @@ namespace DuelLinksAccess
         /// </summary>
         public bool ProcessNonConflictingInput()
         {
+            if (_openingExtraPicker) return true;
             // Zone hotkeys work during dialogs (don't conflict with dialog keys)
             if (ProcessHotkeyInput())
                 return true;
@@ -403,6 +406,7 @@ namespace DuelLinksAccess
         /// </summary>
         public bool ProcessInput()
         {
+            if (_openingExtraPicker) return true;
             // EmotionalList already active — handle first
             if (_emotionalList.IsActive)
                 return ProcessEmotionalListInput();
@@ -1069,6 +1073,14 @@ namespace DuelLinksAccess
                 }
 
                 var card = snap.Value;
+                if (_currentZone == Zone.MyExtra)
+                {
+                    _extraReadId = card.CardDbId;
+                    _extraReadUid = card.UniqueId;
+                    _extraReadSlot = slotIndex;
+                    MelonLogger.Msg($"[ExtraSelect] Read player={player} browse={slotIndex} " +
+                        $"cid={card.CardDbId} uid={card.UniqueId} name={card.Name}");
+                }
                 uint cardDbId = (uint)card.CardDbId;
                 string cardName = card.Name ?? Loc.Get("duel_unknown_card");
 
@@ -1292,6 +1304,87 @@ namespace DuelLinksAccess
 
         #region Actions
 
+        private int _extraReadId;
+        private int _extraReadUid;
+        private int _extraReadSlot = -1;
+        private bool _openingExtraPicker;
+        private int _extraPickerGeneration;
+
+        private void SummonReadExtraCard(int player, int browseSlot)
+        {
+            if (_openingExtraPicker) return;
+            var current = DuelState.GetFieldCard(player, LocateExtra, browseSlot);
+            if (_extraReadSlot != browseSlot || !current.HasValue
+                || current.Value.CardDbId != _extraReadId
+                || current.Value.UniqueId != _extraReadUid || _extraReadUid <= 0)
+            {
+                MelonLogger.Msg($"[ExtraSelect] Rejected unverified/stale target " +
+                    $"player={player} browse={browseSlot} cid={_extraReadId} uid={_extraReadUid}");
+                ReadCurrentCard(false);
+                ScreenReader.Say(Loc.Get("duel_extra_unverified"));
+                return;
+            }
+            var worker = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d;
+            if (worker == null) return;
+            _openingExtraPicker = true;
+            MelonCoroutines.Start(OpenNativeExtraPicker(player, _extraReadUid, ++_extraPickerGeneration));
+        }
+
+        private IEnumerator OpenNativeExtraPicker(int player, int wantedUid, int generation)
+        {
+            try
+            {
+                var worker = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d;
+                if (worker == null) yield break;
+                if (worker.curInputType != Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase)
+                {
+                    ScreenReader.Say(Loc.Get("duel_no_actions"));
+                    yield break;
+                }
+                // Mouse traces prove index 0 requests the native summon list;
+                // it is NOT the desired monster's ordinal (e.g. 6). OnTapLocator
+                // alone can no-op without native pointer state, so bypass only
+                // the popup click, retaining the explicit monster list selection.
+                MelonLogger.Msg($"[ExtraSelect] Native summon-list request player={player} entry=0 wantedUid={wantedUid}");
+                DuelEventAnnouncer.ArmLocalSeatCapture();
+                worker.OnDoCardCommand(player, LocateExtra, ExtraSummonPolicy.PileEntryIndex,
+                    Il2CppYgomGame.Duel.Engine.CommandType.SummonSp);
+                float deadline = UnityEngine.Time.unscaledTime + 3f;
+                while (UnityEngine.Time.unscaledTime < deadline && generation == _extraPickerGeneration)
+                {
+                    yield return null;
+                    var list = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                    if (list?.gameObject?.activeInHierarchy != true || list.isClosing
+                        || list.listType != Il2CppYgomGame.Duel.EmotionalList.ListType.NoramlList
+                        || list.selectMaxNum != 1 || (list.itemList?.Count ?? 0) == 0) continue;
+                    var visuals = list.cardList;
+                    var items = list.itemList;
+                    if (visuals == null) continue;
+                    var uids = new int[visuals.Count];
+                    var indices = new int[visuals.Count];
+                    var itemUids = new int[items.Count];
+                    for (int i = 0; i < items.Count; i++) itemUids[i] = items[i]?.uniqueId ?? 0;
+                    for (int i = 0; i < visuals.Count; i++)
+                    {
+                        uids[i] = visuals[i]?.gameObject?.activeInHierarchy == true ? visuals[i].UniqueID : 0;
+                        indices[i] = visuals[i]?.Index ?? -1;
+                    }
+                    int visual = ExtraSummonPolicy.FindVisual(wantedUid, uids, indices, itemUids);
+                    if (visual < 0) continue;
+                    _emotionalList.IsHandled = false;
+                    EnterEmotionalList(list);
+                    _emotionalList.Index = visual;
+                    ScrollEmotionalList(visual);
+                    ReadEmotionalListCard(visual);
+                    MelonLogger.Msg($"[ExtraSelect] Native choice focused visual={visual} uid={wantedUid}; awaiting user Enter");
+                    yield break;
+                }
+                if (generation == _extraPickerGeneration)
+                    ScreenReader.Say(Loc.Get("duel_extra_choice_unavailable"));
+            }
+            finally { if (generation == _extraPickerGeneration) _openingExtraPicker = false; }
+        }
+
         /// <summary>
         /// Simulates tapping the selected card via OnTapLocator.
         /// The game opens its native CardCommand popup (handled by DialogHandler
@@ -1315,6 +1408,13 @@ namespace DuelLinksAccess
                 _currentZone == Zone.ExtraMonster,
                 player,
                 PlayerMe);
+
+            // Guard: skip empty grid slots. DuelState's GetFieldCard /
+            if (_currentZone == Zone.MyExtra)
+            {
+                SummonReadExtraCard(player, slotIndex);
+                return;
+            }
 
             // Guard: skip empty grid slots. DuelState's GetFieldCard /
             // GetHandCard return null when the slot is empty, sourced from
@@ -1584,6 +1684,12 @@ namespace DuelLinksAccess
             _pendingCardCom = null;
 
             CancelActionMenu();
+
+            if (locate == LocateExtra)
+            {
+                SummonReadExtraCard(player, slotIndex);
+                return;
+            }
 
             if (NeedsTarget(cmdType))
             {
@@ -2451,7 +2557,8 @@ namespace DuelLinksAccess
             try
             {
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
-                emoList?.ScrollCardList(index, true);
+                int dataIndex = ResolveItemIndex(emoList, index);
+                if (dataIndex >= 0) emoList.ScrollCardList(dataIndex, true);
             }
             catch (Exception ex)
             {
@@ -2465,7 +2572,8 @@ namespace DuelLinksAccess
             try
             {
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
-                emoList?.SelectIndex(index, false);
+                int dataIndex = ResolveItemIndex(emoList, index);
+                if (dataIndex >= 0) emoList.SelectIndex(dataIndex, false);
             }
             catch (Exception ex)
             {
@@ -2505,8 +2613,10 @@ namespace DuelLinksAccess
                 // runtime uniqueId in mixedId; hand/grave cards often store the
                 // card DB ID directly. Try uniqueId lookup first, then fall back
                 // to treating mixedId as a card DB ID.
-                int cardDbId = 0;
-                if (uid > 0)
+                // The displayed list item's own ID wins. A hollow UID lookup
+                // must never replace it with an unrelated card's name.
+                int cardDbId = cid > 0 && cid < 100000 ? cid : 0;
+                if (cardDbId == 0 && uid > 0 && !DuelState.IsEngineHollow)
                 {
                     try
                     {
@@ -2659,24 +2769,25 @@ namespace DuelLinksAccess
         /// is the underlying data. They are not guaranteed to share an ordering
         /// (the game may sort the visuals), so reading itemList[i] while clicking
         /// cardList[i] can target a different card than the user heard.
-        /// Falls back to the visual index when ListCard.Index is unavailable.
+        /// Returns -1 when the mapping is unavailable; never guesses the index.
         /// </summary>
         private static int ResolveItemIndex(
             Il2CppYgomGame.Duel.EmotionalList emoList, int visualIndex)
         {
-            if (emoList == null || visualIndex < 0) return visualIndex;
+            if (emoList == null || visualIndex < 0) return -1;
             try
             {
                 var cards = emoList.cardList;
-                if (cards == null || visualIndex >= cards.Count) return visualIndex;
+                if (cards == null || visualIndex >= cards.Count) return -1;
                 var listCard = cards[visualIndex];
-                if (listCard == null) return visualIndex;
+                if (listCard == null) return -1;
                 int idx = listCard.Index;
-                return idx >= 0 ? idx : visualIndex;
+                return CardSelectionPolicy.ResolveDataIndex(visualIndex, idx,
+                    emoList.itemList?.Count ?? 0);
             }
             catch
             {
-                return visualIndex;
+                return -1;
             }
         }
 
@@ -2691,7 +2802,11 @@ namespace DuelLinksAccess
                 var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
                 if (emoList == null) return;
 
-                emoList.SelectIndex(_emotionalList.Index, false);
+                int itemIndex = ResolveItemIndex(emoList, _emotionalList.Index);
+                if (itemIndex < 0) return;
+                MelonLogger.Msg($"[CardSelect] Toggle visual={_emotionalList.Index} item={itemIndex} " +
+                    $"name={GetEmoCardName(_emotionalList.Index)}");
+                emoList.SelectIndex(itemIndex, false);
 
                 int selectedCount = 0;
                 int selectMax = 0;
@@ -2895,6 +3010,16 @@ namespace DuelLinksAccess
                         if (cards != null && _emotionalList.Index < cards.Count)
                         {
                             var listCard = cards[_emotionalList.Index];
+                            int itemIndex = ResolveItemIndex(emoList, _emotionalList.Index);
+                            if (listCard == null || itemIndex < 0)
+                            {
+                                ScreenReader.Say(Loc.Get("duel_action_error"));
+                                return;
+                            }
+                            var item = emoList.itemList[itemIndex];
+                            MelonLogger.Msg($"[CardSelect] Confirm visual={_emotionalList.Index} " +
+                                $"item={itemIndex} cid={item.cid} uid={item.uniqueId} mixed={item.mixedId} " +
+                                $"name={GetEmoCardName(_emotionalList.Index)}");
                             MelonLoader.MelonLogger.Msg(
                                 $"[FieldNav] Confirm: _emotionalList.Index={_emotionalList.Index}, " +
                                 $"calling OnClickCard(cardList[{_emotionalList.Index}])");
@@ -2905,12 +3030,14 @@ namespace DuelLinksAccess
                             MelonLoader.MelonLogger.Msg(
                                 $"[FieldNav] Confirm: cardList null or index out of range " +
                                 $"(_emotionalList.Index={_emotionalList.Index} count={cards?.Count ?? 0})");
+                            return;
                         }
                     }
                     catch (Exception ex)
                     {
                         MelonLoader.MelonLogger.Msg(
                             $"[FieldNav] OnClickCard error: {ex.Message}");
+                        return;
                     }
                 }
 
@@ -2990,8 +3117,8 @@ namespace DuelLinksAccess
                 try { uid = item.uniqueId; } catch { }
                 try { cid = item.cid; } catch { }
 
-                int cardDbId = 0;
-                if (uid > 0)
+                int cardDbId = cid > 0 && cid < 100000 ? cid : 0;
+                if (cardDbId == 0 && uid > 0 && !DuelState.IsEngineHollow)
                 {
                     try
                     {
@@ -3678,22 +3805,7 @@ namespace DuelLinksAccess
             // selection happens downstream via EmotionalList.
             if (locate == LocateExtra)
             {
-                if (DuelState.GetFieldCard(player, locate, slotIndex) == null)
-                {
-                    ScreenReader.Say(Loc.Get("duel_no_actions"));
-                    yield break;
-                }
-
-                var worker = client.worker2d;
-                if (worker != null)
-                {
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        $"Extra Deck: OnDoCardCommand(SummonSp) for ({player}, {locate}, {slotIndex})");
-                    ScreenReader.Say(Loc.Get("duel_cmd_special_summon"));
-                    DuelEventAnnouncer.ArmLocalSeatCapture();
-                    worker.OnDoCardCommand(player, locate, slotIndex,
-                        Il2CppYgomGame.Duel.Engine.CommandType.SummonSp);
-                }
+                SummonReadExtraCard(player, slotIndex);
                 yield break;
             }
 

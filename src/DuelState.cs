@@ -213,6 +213,7 @@ namespace DuelLinksAccess
         /// </summary>
         public static CardSnapshot? GetFieldCard(int player, int locate, int slot)
         {
+            if (locate == LocateExtra) return GetCurrentExtraCard(player, slot);
             var root = FindFieldCardRoot(player, locate, slot);
             if (root == null)
             {
@@ -220,13 +221,6 @@ namespace DuelLinksAccess
                 // Resolve through zone-specific sources before engine fallback.
                 if (IsStackZone(locate))
                 {
-                    if (locate == LocateExtra
-                        && TryGetLiveExtraDeckCard(
-                            player, slot, out CardSnapshot? liveExtra))
-                    {
-                        return liveExtra;
-                    }
-
                     // Before a live Extra Deck stack is loaded, registered-deck
                     // data supplies its initial local-player contents. Privacy
                     // is enforced inside GetRegisteredDeckCard.
@@ -433,15 +427,15 @@ namespace DuelLinksAccess
         {
             if (locate == LocateHand) return GetHandSize(player);
 
-            if (locate == LocateExtra
-                && TryGetLiveExtraDeckCount(player, out int liveExtraCount))
+            if (locate == LocateExtra)
             {
-                return liveExtraCount;
+                GetExtraLayout(player, out int extraCount);
+                return extraCount;
             }
 
             // Registered data is the initialization fallback for the local
             // Extra Deck and Main Deck before a live stack is available.
-            if (locate == LocateExtra || locate == LocateDeck)
+            if (locate == LocateDeck)
             {
                 int registered = GetRegisteredDeckCount(player, locate);
                 if (registered > 0) return registered;
@@ -564,46 +558,113 @@ namespace DuelLinksAccess
             catch { return null; }
         }
 
-        private static bool TryGetLiveExtraDeckCount(
-            int player, out int count)
+        private static readonly string[] _extraLayoutLog = { "", "" };
+
+        private static ExtraDeckDataSource GetExtraLayout(int player, out int count)
         {
             count = 0;
+            int engineCount = 0, liveCount = -1, innerCount = 0;
+            bool loaded = false;
+            var place = GetStackPlace(player, LocateExtra);
             try
             {
-                var place = GetStackPlace(player, LocateExtra);
-                var cards = place?.innerCards;
-                if (!ExtraDeckSourcePolicy.UseLiveStack(
-                    place != null,
-                    place?.isLoaded == true,
-                    cards?.Count ?? 0)) return false;
-
-                count = cards.Count;
-                return true;
+                if (!IsEngineHollow)
+                    engineCount = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, LocateExtra);
+                if (place != null)
+                {
+                    loaded = place.isLoaded;
+                    liveCount = place.localCardNum;
+                    innerCount = place.innerCards?.Count ?? 0;
+                }
             }
-            catch { return false; }
+            catch { }
+            var source = ExtraDeckSourcePolicy.ChooseSource(engineCount > 0,
+                place != null, loaded, liveCount, innerCount);
+            count = source == ExtraDeckDataSource.Engine ? engineCount
+                : source == ExtraDeckDataSource.Registered ? GetRegisteredDeckCount(player, LocateExtra)
+                : liveCount;
+            string shape = $"source={source} count={count} engine={engineCount} local={liveCount} inner={innerCount}";
+            if (player >= 0 && player < 2 && _extraLayoutLog[player] != shape)
+            {
+                _extraLayoutLog[player] = shape;
+                MelonLogger.Msg($"[ExtraLayout] player={player} {shape}");
+            }
+            return source;
         }
 
-        private static bool TryGetLiveExtraDeckCard(
-            int player, int slot, out CardSnapshot? card)
+        private static CardSnapshot? GetCurrentExtraCard(int player, int slot)
         {
-            card = null;
-            if (slot < 0) return false;
+            var source = GetExtraLayout(player, out int count);
+            if (slot < 0 || slot >= count) return null;
+            if (!ExtraDeckSourcePolicy.CanRevealIdentity(player, MyPlayerNum())) return null;
             try
             {
-                var place = GetStackPlace(player, LocateExtra);
-                var cards = place?.innerCards;
-                if (!ExtraDeckSourcePolicy.UseLiveStack(
-                    place != null,
-                    place?.isLoaded == true,
-                    cards?.Count ?? 0)) return false;
+                if (source == ExtraDeckDataSource.Registered)
+                    return GetRegisteredDeckCard(player, LocateExtra, slot);
+                if (source == ExtraDeckDataSource.Engine)
+                {
+                    int uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, LocateExtra, slot);
+                    if (uid > 0)
+                    {
+                        var root = FindCardRootByUid(uid);
+                        return root != null ? MakeSnapshot(root, true) : MakeContentSnapshot(uid);
+                    }
+                }
+                if (source == ExtraDeckDataSource.LiveStack)
+                {
+                    var cards = GetStackPlace(player, LocateExtra)?.innerCards;
+                    if (cards != null && slot < cards.Count && cards[slot] != null)
+                        return MakeSnapshot(cards[slot], true);
+                }
+                else if (source == ExtraDeckDataSource.Locators)
+                {
+                    var root = FindFieldCardRoot(player, LocateExtra, slot);
+                    if (root != null) return MakeSnapshot(root, true);
+                }
+            }
+            catch { }
+            // A current slot with unknown identity is NOT a card from the old
+            // registered array at the same ordinal. Keep it explicitly unknown.
+            return new CardSnapshot(0, 0, null, 0, 0, 0, false, false);
+        }
 
-                // A populated stack is authoritative for slot existence, but
-                // the opponent's Extra Deck identities remain hidden.
-                if (!ExtraDeckSourcePolicy.CanRevealIdentity(
-                    player, MyPlayerNum())) return true;
-
-                if (slot < cards.Count && cards[slot] != null)
-                    card = MakeSnapshot(cards[slot], isFaceUp: true);
+        public static bool TryResolveExtraCommand(int player, int cardId, int uid,
+            out int commandIndex)
+        {
+            commandIndex = -1;
+            if (player != MyPlayerNum() || uid <= 0) return false;
+            try
+            {
+                var root = FindCardRootByUid(uid);
+                if (root == null)
+                {
+                    var cards = GetStackPlace(player, LocateExtra)?.innerCards;
+                    if (cards != null)
+                        for (int i = 0; i < cards.Count; i++)
+                            if (cards[i]?.uniqueId == uid) { root = cards[i]; break; }
+                }
+                if (root == null && !IsEngineHollow)
+                {
+                    int count = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardNum(player, LocateExtra);
+                    for (int i = 0; i < count; i++)
+                    {
+                        int actualUid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(player, LocateExtra, i);
+                        if (actualUid != uid) continue;
+                        var actualCard = MakeContentSnapshot(actualUid);
+                        if (actualCard.HasValue && CardSelectionPolicy.CanDispatchExtra(
+                            cardId, actualCard.Value.CardDbId, uid, actualUid, i))
+                        { commandIndex = i; return true; }
+                    }
+                    return false;
+                }
+                var locator = root?.toLocator;
+                var place = locator?.cardPlace;
+                if (place == null || place.team != player || place.position != LocateExtra)
+                    return false;
+                var actual = MakeSnapshot(root, isFaceUp: true);
+                if (!CardSelectionPolicy.CanDispatchExtra(cardId, actual.CardDbId,
+                    uid, actual.UniqueId, locator.index)) return false;
+                commandIndex = locator.index;
                 return true;
             }
             catch { return false; }
@@ -710,6 +771,7 @@ namespace DuelLinksAccess
             _localSeat = -1;
             _currentPhase = Il2CppYgomGame.Duel.Engine.Phase.Null;
             _turnTracker.Reset();
+            _extraLayoutLog[0] = _extraLayoutLog[1] = "";
             _lp[0] = -1;
             _lp[1] = -1;
         }

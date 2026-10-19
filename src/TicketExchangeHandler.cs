@@ -20,6 +20,8 @@ namespace DuelLinksAccess
         private string _lastVcGoName = "";
 
         private int _focusIndex;
+        private bool _confirmFocused;
+        private readonly List<bool> _hasCardIdentity = new();
 
         // Card list from the exchange — stored as card IDs (mrk values)
         private readonly List<int> _cardIds = new();
@@ -30,8 +32,8 @@ namespace DuelLinksAccess
         // Reconstructing from the mrk alone leaves Kirarity=0; the exchange then
         // submits a malformed card and the game hard-resets to the title screen
         // ("An error has occurred") right after TRADE is confirmed.
-        // cardExchangeList carries only mrk (no rarity), so entries from that
-        // source store 0.
+        // cardExchangeList carries only mrk: those entries are read-only until
+        // a complete CardAndRarity list becomes available.
         private readonly List<long> _cardKirarities = new();
 
         // Cooldown
@@ -53,6 +55,7 @@ namespace DuelLinksAccess
         // preceded the app resetting to the Logo/Title screens.)
         private bool _awaitingExchangeResult;
         private bool _exchangeDialogSeen;
+        private float _exchangeRefreshAfter;
 
         #endregion
 
@@ -85,7 +88,8 @@ namespace DuelLinksAccess
             }
 
             string goName = vc.gameObject?.name ?? "";
-            if (!_wasActive || goName != _lastVcGoName)
+            if (!_wasActive || goName != _lastVcGoName
+                || _vc?.gameObject?.GetInstanceID() != vc.gameObject?.GetInstanceID())
             {
                 Activate(vc, goName);
             }
@@ -99,7 +103,10 @@ namespace DuelLinksAccess
             }
 
             if (_awaitingExchangeResult)
+            {
                 CheckPostExchangeRefresh();
+                if (_awaitingExchangeResult) return;
+            }
 
             ProcessInput();
         }
@@ -115,6 +122,7 @@ namespace DuelLinksAccess
             _wasActive = true;
             IsActive = true;
             _focusIndex = 0;
+            _confirmFocused = false;
             _initialScanDone = false;
             _initialScanDelay = 1.0f;
             _initialScanAttempts = 0;
@@ -141,7 +149,9 @@ namespace DuelLinksAccess
 
             // Dialog hasn't appeared yet (still opening) — keep waiting
             // rather than refreshing prematurely and missing the real close.
-            if (!_exchangeDialogSeen) return;
+            // Main gives the dialog handler exclusive input while a dialog is
+            // visible, so this handler may never observe the open transition.
+            if (!_exchangeDialogSeen && Time.unscaledTime < _exchangeRefreshAfter) return;
 
             _awaitingExchangeResult = false;
             _exchangeDialogSeen = false;
@@ -205,6 +215,7 @@ namespace DuelLinksAccess
             _vc = null;
             _cardIds.Clear();
             _cardKirarities.Clear();
+            _hasCardIdentity.Clear();
             _awaitingExchangeResult = false;
             _exchangeDialogSeen = false;
 
@@ -218,21 +229,20 @@ namespace DuelLinksAccess
         /// <summary>
         /// Attempts to find CardGetterViewController as the top content VC.
         /// </summary>
-        private CardGetterViewController TryGetCardGetterVC()
+        private static CardGetterViewController TryGetCardGetterVC()
         {
             try
             {
                 var namedMgr = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
                 if (namedMgr == null) return null;
 
-                Il2CppYgomSystem.UI.ViewControllerManager contentMgr;
-                if (!namedMgr.TryGetValue("content", out contentMgr) || contentMgr == null)
-                    return null;
-
-                var topVc = contentMgr.GetStackTopViewController();
-                if (topVc == null) return null;
-
-                return topVc.TryCast<CardGetterViewController>();
+                foreach (string key in new[] { "sub", "content" })
+                {
+                    if (!namedMgr.TryGetValue(key, out var manager) || manager == null) continue;
+                    var candidate = manager.GetStackTopViewController()?.TryCast<CardGetterViewController>();
+                    if (candidate?.gameObject?.activeInHierarchy == true) return candidate;
+                }
+                return null;
             }
             catch (Exception ex)
             {
@@ -253,27 +263,11 @@ namespace DuelLinksAccess
         {
             _cardIds.Clear();
             _cardKirarities.Clear();
+            _hasCardIdentity.Clear();
 
             try
             {
                 if (_vc == null) return;
-
-                // Try cardExchangeList first (List<int> of card IDs for ticket
-                // exchange). This source carries only the mrk — no rarity — so
-                // stored Kirarity is 0 for these entries.
-                var exchangeList = _vc.cardExchangeList;
-                if (exchangeList != null && exchangeList.Count > 0)
-                {
-                    for (int i = 0; i < exchangeList.Count; i++)
-                    {
-                        _cardIds.Add(exchangeList[i]);
-                        _cardKirarities.Add(0L);
-                    }
-
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        $"Loaded {_cardIds.Count} cards from cardExchangeList");
-                    return;
-                }
 
                 // Fallback: try exchangeList (List<CardAndRarity>) — keep the
                 // real Kirarity so the exchange submits the exact card.
@@ -285,6 +279,7 @@ namespace DuelLinksAccess
                         var car = carList[i];
                         _cardIds.Add(car.Mrk);
                         _cardKirarities.Add(car.Kirarity);
+                        _hasCardIdentity.Add(true);
                     }
 
                     DebugLogger.Log(LogCategory.Handler, "TicketExchange",
@@ -301,11 +296,22 @@ namespace DuelLinksAccess
                         var car = choiceList[i];
                         _cardIds.Add(car.Mrk);
                         _cardKirarities.Add(car.Kirarity);
+                        _hasCardIdentity.Add(true);
                     }
 
                     DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                         $"Loaded {_cardIds.Count} cards from choiceList");
+                    return;
                 }
+                // IDs alone are readable, but not safe exchange payloads.
+                var ids = _vc.cardExchangeList;
+                if (ids != null)
+                    for (int i = 0; i < ids.Count; i++)
+                    {
+                        _cardIds.Add(ids[i]);
+                        _cardKirarities.Add(0);
+                        _hasCardIdentity.Add(false);
+                    }
             }
             catch (Exception ex)
             {
@@ -368,7 +374,8 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.Return)
                 || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
-                SelectCurrentCard();
+                if (_confirmFocused) ConfirmExchange();
+                else SelectCurrentCard();
                 return;
             }
 
@@ -393,13 +400,17 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // Tab — rescan card list
+            // Tab exposes the exchange action as an actual keyboard focus stop.
             if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
-                RefreshCardList();
-                ScreenReader.Say(Loc.Get("ticket_entered", _cardIds.Count));
-                if (_cardIds.Count > 0)
-                    AnnounceCurrentCard(queued: true);
+                _confirmFocused = !_confirmFocused;
+                if (_confirmFocused) ScreenReader.Say(Loc.Get("ticket_confirm_focus"));
+                else
+                {
+                    RefreshCardList();
+                    if (_cardIds.Count > 0) AnnounceCurrentCard();
+                    else ScreenReader.Say(Loc.Get("ticket_no_cards"));
+                }
                 return;
             }
 
@@ -418,6 +429,7 @@ namespace DuelLinksAccess
 
         private void NavigateBy(int delta)
         {
+            _confirmFocused = false;
             if (_cardIds.Count == 0)
             {
                 ScreenReader.Say(Loc.Get("ticket_no_cards"));
@@ -444,6 +456,24 @@ namespace DuelLinksAccess
             long kirarity = (_focusIndex < _cardKirarities.Count) ? _cardKirarities[_focusIndex] : 0L;
             string name = CardFormatter.GetName(mrk);
 
+            // Re-read before native calls; a filter or previous exchange may
+            // have replaced the list since this card was announced.
+            RefreshCardList();
+            if (_focusIndex >= _cardIds.Count || _cardIds[_focusIndex] != mrk
+                || _cardKirarities[_focusIndex] != kirarity)
+            {
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Stale selection rejected mrk={mrk} kirarity={kirarity}");
+                AnnounceCurrentCard();
+                return;
+            }
+
+            if (_focusIndex >= _hasCardIdentity.Count || !_hasCardIdentity[_focusIndex])
+            {
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Selection refused: missing rarity mrk={mrk}");
+                ScreenReader.Say(Loc.Get("ticket_identity_unavailable"));
+                return;
+            }
+
             try
             {
                 // Feed the game the exact card it gave us, Kirarity included.
@@ -458,6 +488,8 @@ namespace DuelLinksAccess
                     if (result)
                     {
                         ScreenReader.Say(Loc.Get("ticket_selected", name));
+                        MelonLoader.MelonLogger.Msg($"[TicketExchange] Selected mrk={mrk} kirarity={kirarity} name={name}");
+                        ScreenReader.SayQueued(Loc.Get("ticket_confirm_hint"));
                         DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                             $"Selected card mrk={mrk} kirarity={kirarity} ({name})");
                     }
@@ -468,6 +500,7 @@ namespace DuelLinksAccess
                 }
                 else
                 {
+                    MelonLoader.MelonLogger.Msg($"[TicketExchange] isAddible=false mrk={mrk} kirarity={kirarity} mode={GetModeName()}");
                     ScreenReader.Say(Loc.Get("ticket_activate_error"));
                 }
 
@@ -498,17 +531,24 @@ namespace DuelLinksAccess
                 var exchangeBtn = _vc?.exchangeButton;
 
                 var action = TicketExchangePolicy.ChooseAction(
-                    decideBtn != null, decideBtn?.interactable == true,
-                    exchangeBtn != null, exchangeBtn?.interactable == true);
+                    decideBtn?.gameObject?.activeInHierarchy == true,
+                    decideBtn?.interactable == true,
+                    exchangeBtn?.gameObject?.activeInHierarchy == true,
+                    exchangeBtn?.interactable == true);
+
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Confirm mode={GetModeName()} action={action} " +
+                    $"decideActive={decideBtn?.gameObject?.activeInHierarchy} decideEnabled={decideBtn?.interactable} " +
+                    $"exchangeActive={exchangeBtn?.gameObject?.activeInHierarchy} exchangeEnabled={exchangeBtn?.interactable}");
 
                 switch (action)
                 {
                     case TicketExchangeAction.ConfirmViaDecide:
-                        _vc.DecideClicked();
+                        decideBtn.onClick.Invoke();
                         DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                            "Confirmed via decideButton (DecideClicked)");
+                            "Confirmed via decideButton.onClick");
                         _awaitingExchangeResult = true;
                         _exchangeDialogSeen = false;
+                        _exchangeRefreshAfter = Time.unscaledTime + 0.5f;
                         break;
 
                     case TicketExchangeAction.InvokeExchangeButton:
@@ -517,6 +557,7 @@ namespace DuelLinksAccess
                             "Confirmed via exchangeButton");
                         _awaitingExchangeResult = true;
                         _exchangeDialogSeen = false;
+                        _exchangeRefreshAfter = Time.unscaledTime + 0.5f;
                         break;
 
                     default: // Reject
@@ -621,6 +662,29 @@ namespace DuelLinksAccess
         #endregion
 
         #region Utilities
+
+        // Screen-button browsing can reach the native exchange control too.
+        // Route it to its real click event once, before generic pointer fallbacks.
+        public static bool TryActivateConfirmControl(GameObject go)
+        {
+            var vc = TryGetCardGetterVC();
+            if (vc == null || go == null) return false;
+            foreach (var button in new[] { vc.decideButton, vc.exchangeButton })
+            {
+                if (button == null) continue;
+                if (go != button.gameObject && !go.transform.IsChildOf(button.transform)) continue;
+                if (!TicketExchangePolicy.IsUsable(true,
+                    button.gameObject.activeInHierarchy, button.interactable))
+                {
+                    ScreenReader.Say(Loc.Get("ticket_nothing_to_exchange"));
+                    return true;
+                }
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Native confirm control={button.gameObject.name} mode={vc.Mode}");
+                button.onClick.Invoke();
+                return true;
+            }
+            return false;
+        }
 
         private string GetModeName()
         {

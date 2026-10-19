@@ -24,6 +24,9 @@ namespace DuelLinksAccess
     {
         #region Fields
 
+        private float _noticeReadDelay = -1f;
+        private int _noticeReadAttempts;
+        private string _noticeBeforeActivation = "";
         private string _lastVcName = "";
         private bool _scanned;
         private float _scanDelay;
@@ -260,6 +263,8 @@ namespace DuelLinksAccess
                 }
             }
 
+            if (_noticeReadDelay >= 0f && !IsNoticePage()) _noticeReadDelay = -1f;
+
             // In text mode, poll for text changes to auto-read new dialogue
             if (_textMode)
                 PollTextChanges();
@@ -290,6 +295,26 @@ namespace DuelLinksAccess
                 }
             }
 
+            if (_noticeReadDelay >= 0f)
+            {
+                _noticeReadDelay -= Time.unscaledDeltaTime;
+                if (_noticeReadDelay <= 0f)
+                {
+                    string body = AccessibleUiText.Read(GetActiveScreenRoot());
+                    if (!string.IsNullOrWhiteSpace(body) && body != _noticeBeforeActivation)
+                    {
+                        ScreenReader.Say(body);
+                        _noticeReadDelay = -1f;
+                        _tabRescanDelay = 0.1f;
+                    }
+                    else if (++_noticeReadAttempts >= 6)
+                    {
+                        ScreenReader.Say(Loc.Get("ui_notice_unavailable"));
+                        _noticeReadDelay = -1f;
+                    }
+                    else _noticeReadDelay = 0.5f;
+                }
+            }
             ProcessInput();
         }
 
@@ -419,6 +444,14 @@ namespace DuelLinksAccess
 
                 // Find clickable buttons
                 FindButtons(_screenRoot);
+
+                foreach (var button in PurchaseAccessibility.Find(_screenRoot))
+                {
+                    _items.RemoveAll(i => i.Go == button.gameObject
+                        || i.Go.transform.IsChildOf(button.transform));
+                    _items.Add(new ScreenItem { Go = button.gameObject,
+                        Label = PurchaseAccessibility.Label(button), Type = ItemType.Button });
+                }
 
                 // Also scan the header/footer area (separate from content VC)
                 var headerRoot = GetHeaderRoot();
@@ -1169,6 +1202,25 @@ namespace DuelLinksAccess
         /// Reads all visible text from a screen hierarchy.
         /// Returns combined text from all active Text/YgomTextAccessor components.
         /// </summary>
+        private bool IsNoticePage()
+        {
+            try
+            {
+                string identity = _screenRoot?.name ?? "";
+                var managers = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (managers != null && managers.TryGetValue("content", out var manager))
+                {
+                    var vc = manager?.GetStackTopViewController();
+                    if (vc?.Args != null && vc.Args.TryGetValue("target", out var target))
+                        identity += " " + target?.ToString();
+                }
+                identity = identity.ToLowerInvariant();
+                return identity.Contains("notice") || identity.Contains("notification")
+                    || identity.Contains("news");
+            }
+            catch { return false; }
+        }
+
         private string ReadScreenText(GameObject root)
         {
             var parts = new List<string>();
@@ -1186,7 +1238,7 @@ namespace DuelLinksAccess
         /// </summary>
         private void CollectTextParts(GameObject root, List<string> parts)
         {
-            bool anyYta = false;
+
 
             try
             {
@@ -1200,7 +1252,7 @@ namespace DuelLinksAccess
                         string t = LabelExtractor.StripRichText(yta.text);
                         if (string.IsNullOrWhiteSpace(t) || t.Length < 2) continue;
                         if (t.All(char.IsDigit)) continue;
-                        anyYta = true;
+
                         if (!parts.Contains(t))
                             parts.Add(t);
                     }
@@ -1208,8 +1260,7 @@ namespace DuelLinksAccess
             }
             catch { }
 
-            // Fall back to Unity Text if this root had no YTA text
-            if (!anyYta)
+            // Also collect Unity Text: mixed views can expose only their date through YTA.
             {
                 try
                 {
@@ -1645,6 +1696,8 @@ namespace DuelLinksAccess
                     if (IsJunkHtjsonElement(go.name)) continue;
 
                     string label = LabelExtractor.GetLabel(go);
+                    if (IsNoticePage())
+                        label = AccessibleUiText.NoticeLabel(go, label);
 
                     // Annotate tab buttons so users can distinguish tabs from content
                     try
@@ -2064,6 +2117,35 @@ namespace DuelLinksAccess
             {
                 ActivateMapObject(item);
                 return;
+            }
+
+            if (PurchaseAccessibility.Activate(item.Go)) return;
+            if (TicketExchangeHandler.TryActivateConfirmControl(item.Go)) return;
+
+            if (IsNoticePage())
+            {
+                _noticeBeforeActivation = AccessibleUiText.Read(_screenRoot);
+                _noticeReadAttempts = 0;
+                _noticeReadDelay = 0.5f;
+            }
+
+            // Notice Htjson rows bind their link to ButtonSet.onClick.
+            // A TextArea's pointer handler may only play a sound and report
+            // success, so dispatch the actual row link once before that fallback.
+            if (IsNoticePage())
+            {
+                GameObject target = item.Go;
+                if (target.name == "TextArea")
+                    target = target.transform.parent?.Find("ButtonSet")?.gameObject;
+                if (target != null && target.name == "ButtonSet")
+                {
+                    var rowButton = target.GetComponent<Button>();
+                    if (rowButton != null && rowButton.interactable)
+                    {
+                        rowButton.onClick.Invoke();
+                        return;
+                    }
+                }
             }
 
             // Header Back button: use GoBack() directly (SendBack on content VC).

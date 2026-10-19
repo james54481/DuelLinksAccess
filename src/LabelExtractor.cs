@@ -68,6 +68,12 @@ namespace DuelLinksAccess
             result = TryChildUnityText(go);
             if (result != null) return result;
 
+            // An explicitly named action is safer than unrelated dialog-body
+            // text on the parent. Actual game text above always has priority.
+            string action = AccessibleUiPolicy.SemanticAction(go.name);
+            if (action == "confirm") return Loc.Get("ui_confirm");
+            if (action == "cancel") return Loc.Get("ui_cancel");
+
             // 10. Parent/sibling text — button may have its label nearby
             result = TryParentSiblingText(go);
             if (result != null) return result;
@@ -237,35 +243,19 @@ namespace DuelLinksAccess
         }
 
         /// <summary>
-        /// Returns true if the string contains Japanese characters (Hiragana,
-        /// Katakana, or CJK ideographs). Some game labels are hardcoded JP
-        /// regardless of game language; non-JP TTS voices skip or garble them,
-        /// so callers should fall back to a cleaned GO name or Loc string.
+        /// Detects Japanese kana, not shared Chinese/Japanese Han characters.
+        /// All existing callers therefore preserve Traditional/Simplified Chinese
+        /// game labels. Han-only Japanese labels cannot be reliably identified.
         /// </summary>
         public static bool ContainsJapanese(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return false;
-            foreach (char c in s)
-            {
-                if ((c >= '぀' && c <= 'ヿ')     // Hiragana + Katakana
-                    || (c >= '一' && c <= '鿿')  // CJK Unified Ideographs
-                    || (c >= '㐀' && c <= '䶿')) // CJK Extension A
-                    return true;
-            }
-            return false;
-        }
+            => LabelLanguagePolicy.ContainsJapanese(s);
 
         /// <summary>
         /// Checks if a string is a valid, meaningful label.
         /// Rejects null, empty, all-digit, and too-short strings.
         /// </summary>
         public static bool IsValidLabel(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return false;
-            if (text.Length < 2) return false;
-            if (text.All(char.IsDigit)) return false;
-            return true;
-        }
+            => AccessibleUiPolicy.IsMeaningfulLabel(text);
 
         /// <summary>
         /// Checks if a GameObject reference is still alive (not destroyed).

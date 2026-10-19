@@ -98,7 +98,10 @@ namespace DuelLinksAccess
             }
 
             ScreenReader.Initialize();
-            Loc.Initialize();
+            var localePreferences = MelonPreferences.CreateCategory("DuelLinksAccess");
+            var localeEntry = localePreferences.CreateEntry<string>(
+                "Language", "zh-TW", "Mod language", "Supported: en, zh-TW. Unknown values use English.");
+            Loc.SetLocale(localeEntry.Value);
             _harmony = new HarmonyLib.Harmony("com.duellinksaccess.mod");
             InitializeHandlers();
             MelonCoroutines.Start(AnnounceStartupDelayed());
@@ -196,7 +199,7 @@ namespace DuelLinksAccess
             if (InputManager.TryConsumeKeyDown(KeyCode.F12))
             {
                 DebugMode = !DebugMode;
-                var status = DebugMode ? "enabled" : "disabled";
+                var status = Loc.Get(DebugMode ? "state_enabled" : "state_disabled");
                 MelonLogger.Msg($"Debug mode {status}");
                 ScreenReader.Say(Loc.Get("debug_mode", status));
                 return true;
@@ -280,6 +283,7 @@ namespace DuelLinksAccess
 
         private void UpdateHandlers()
         {
+            SummonDiagnostics.Update();
             // Tutorial-state instrumentation (debug only). Logs the boot
             // tutorial inProgress + waitTarget state when EITHER changes,
             // so we can correlate state transitions with click events from
@@ -302,6 +306,7 @@ namespace DuelLinksAccess
             // Duel handler runs first — announces events, provides log/status.
             // Key consumption via InputManager prevents conflicts with other handlers.
             _duelHandler?.Update();
+            if (_duelHandler?.IsConfirmationActive == true) return;
 
             // Dialog handler — also handles duel dialogs (Yes/No, effect selection)
             _dialogHandler?.Update();
@@ -1093,7 +1098,8 @@ namespace DuelLinksAccess
 
         private void AnnounceHelp()
         {
-            string help = Loc.Get("help_text");
+            string help = Loc.Get("help_text") + " " + Loc.Get("ui_shop_help")
+                + " " + Loc.Get("duel_skill_help");
             ScreenReader.Say(help);
         }
 

@@ -100,6 +100,9 @@
         "dependencies": {
           "xunit.extensibility.core": "[2.9.3]"
         }
+      },
+      "duellinksaccess.updater.core": {
+        "type": "Project"
       }
     }
   }

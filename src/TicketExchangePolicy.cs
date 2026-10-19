@@ -8,12 +8,15 @@ namespace DuelLinksAccess
         /// <summary>Invoke exchangeButton.onClick (card-trader-style modes).</summary>
         InvokeExchangeButton,
 
-        /// <summary>Call DecideClicked() (ticket / dream-ticket / choice flow).</summary>
+        /// <summary>Invoke decideButton.onClick (ticket / dream-ticket / choice flow).</summary>
         ConfirmViaDecide,
     }
 
     public static class TicketExchangePolicy
     {
+        public static bool IsUsable(bool present, bool active, bool interactable)
+            => present && active && interactable;
+
         /// <summary>
         /// Decides how — and whether — to submit a CardGetter confirmation.
         ///

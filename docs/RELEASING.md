@@ -39,7 +39,7 @@ The package contains:
 - `Tolk.dll` and `nvdaControllerClient64.dll` (x64), taken verbatim from the hash-verified Tolk archive pinned in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)
 - `Tolk-LICENSE.txt` (LGPL 3.0) and `nvdaControllerClient-LICENSE.txt` (LGPL 2.1)
 - `BUILD-INFO.txt`
-- project `LICENSE`
+- project `LICENSE.txt`
 - `README.txt`
 - `THIRD_PARTY_NOTICES.md`
 - `SHA256SUMS.txt`
@@ -55,3 +55,7 @@ Do not add MelonLoader, Unity assemblies, Il2CppInterop assemblies, generated ga
 ## Publish
 
 Write release notes from the actual commit range. State runtime checks separately from automated checks. Upload the ZIP and publish its SHA-256 in the release notes. Confirm the Git tag, `MelonInfo`, project version, archive name, and release title all use the same version.
+
+## Traditional Chinese updater releases
+
+See [the updater release requirements](UPDATER.zh-TW.md). Publish a standalone asset named `DuelLinksAccess.dll` with a numeric release tag matching its assembly version. Publish the independent updater ZIP separately; it does not install the module for the first time.

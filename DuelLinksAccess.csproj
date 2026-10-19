@@ -20,9 +20,14 @@
 
   <!-- Exclude decompiled files and templates from build -->
   <ItemGroup>
+    <EmbeddedResource Include="resources\locales\*.json"
+                      LogicalName="DuelLinksAccess.Locales.%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
     <Compile Remove="decompiled\**" />
     <Compile Remove="templates\**" />
     <Compile Remove="tests\**" />
+    <Compile Remove="updater\**" />
   </ItemGroup>
 
   <!-- MelonLoader References (net6) -->
