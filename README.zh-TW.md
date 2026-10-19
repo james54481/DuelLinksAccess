@@ -6,9 +6,9 @@
 
 ## 開發狀態
 
-目前為尚未正式發布的開發版。R2～R21 是本機測試包標記，不是 GitHub 正式版本號。功能的驗證範圍與限制請見更新日誌。
+繁體中文維護版版本為 **1.4.2.1**。前三段對應原作者基礎版本，第四段為本維護版的修訂次數。R2～R21 僅為歷史本機測試包標記。功能的驗證範圍與限制請見更新日誌。
 
-組件版本目前仍沿用 1.4.2。正式發布前須同步更新專案版本、`src/Main.cs` 的 `MelonInfo`、發布標籤及套件名稱，並用對應原始碼重新編譯；不要直接將歷次測試 DLL 改名當成正式發布版。
+下載請前往 [本維護倉庫 Releases](https://github.com/james54481/DuelLinksAccess/releases)。模組標籤為 `v1.4.2.1`，更新程式使用獨立版本 `0.1.0`。
 
 ## 內容
 
@@ -49,6 +49,6 @@ dotnet build DuelLinksAccess.csproj -c Release -p:DuelLinksPath="你的遊戲安
 
 第三方函式庫另有各自授權，詳見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。如發佈 Tolk 或 NVDA controller client，必須另行核對其授權、來源及發布材料，不能僅附本專案 MIT 授權。
 
-禁止將遊戲／Unity 組件、反編譯遊戲碼、帳號日誌或個人資料放進本倉庫或發布包。獨立更新程式已有本機開發版，使用方式及發布條件請見 [更新程式說明](docs/UPDATER.zh-TW.md)；尚未正式發布。
+禁止將遊戲／Unity 組件、反編譯遊戲碼、帳號日誌或個人資料放進本倉庫或發布包。獨立更新程式已有本機開發版，使用方式及發布條件請見 [更新程式說明](docs/UPDATER.zh-TW.md)。
 
 正式發布請依 [上游發布流程](docs/RELEASING.md) 檢查，並提供對應 Git tag 的原始碼、更新說明、授權及 SHA-256。歷次本機測試包、診斷資料及測試暫存均不納入 Git 提交。

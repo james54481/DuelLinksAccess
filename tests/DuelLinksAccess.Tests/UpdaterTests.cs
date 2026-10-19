@@ -39,6 +39,12 @@ public sealed class UpdaterTests : IDisposable
         Assert.Equal(new Version(1, 4, 3), release.Version);
         Assert.Equal("新版說明", release.Notes);
     }
+    [Fact] public void CommunityFourPartReleaseIsNewerThanUpstreamBase()
+    {
+        var release = ReleaseClient.Parse(Json(tag: "v1.4.2.1"));
+        Assert.Equal(new Version(1, 4, 2, 1), release.Version);
+        Assert.True(ReleaseClient.Normalize(release.Version) > ReleaseClient.Normalize(new Version(1, 4, 2)));
+    }
     [Theory]
     [InlineData("v1.4.3-beta")]
     [InlineData("main")]
