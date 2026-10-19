@@ -8,7 +8,7 @@
 
 繁體中文維護版版本為 **1.4.2.2**。前三段對應原作者基礎版本，第四段為本維護版的修訂次數。R2～R21 僅為歷史本機測試包標記。功能的驗證範圍與限制請見更新日誌。
 
-下載請前往 [本維護倉庫 Releases](https://github.com/james54481/DuelLinksAccess/releases)。模組標籤為 `v1.4.2.2`，更新程式使用獨立版本 `0.1.0`。
+下載請前往 [本維護倉庫 Releases](https://github.com/james54481/DuelLinksAccess/releases)。模組標籤為 `v1.4.2.2`，更新程式使用獨立版本 [`0.1.1`](https://github.com/james54481/DuelLinksAccess/releases/tag/updater-v0.1.1)。
 
 ## 內容
 

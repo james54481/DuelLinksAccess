@@ -1,7 +1,9 @@
 # DuelLinksAccess 模組更新程式
 
-獨立的 Windows 64 位元桌面程式，版本 0.1.1（本機測試版）。更新來源固定為
+獨立的 Windows 64 位元桌面程式，版本 0.1.1。更新來源固定為
 `james54481/DuelLinksAccess` 的最新正式 GitHub Release。原始碼位於 `updater/`，沿用本專案 MIT 授權。
+
+下載：[更新程式 0.1.1](https://github.com/james54481/DuelLinksAccess/releases/tag/updater-v0.1.1)。更新程式以獨立標籤發布，不設為模組的最新正式 Release，以免影響 DLL 更新查詢。
 
 ## 使用方式
 
