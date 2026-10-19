@@ -528,5 +528,7 @@
   "settings_close": "Close Settings",
   "settings_choice_help": "Left/Right chooses an option; Enter applies it",
   "settings_mute_changed": "Mute setting toggled",
-  "download_hd_images": "Download high-resolution card images"
+  "download_hd_images": "Download high-resolution card images",
+  "settings_muted": "Muted",
+  "settings_unmuted": "Unmuted"
 }

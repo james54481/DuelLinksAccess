@@ -3,6 +3,22 @@ namespace DuelLinksAccess.Tests;
 
 public sealed class SettingsAccessibilityPolicyTests
 {
+    [Theory]
+    [InlineData(true, "已靜音")]
+    [InlineData(false, "已解除靜音")]
+    [InlineData(null, "已切換靜音設定")]
+    public void MuteFeedbackReflectsActualStateAndNeverGuessesUnknownState(bool? muted, string expected)
+        => Assert.Equal(expected, LocalizationCatalog.Load("zh-TW").Get(SettingsAccessibilityPolicy.MuteFeedbackKey(muted)));
+
+    [Fact]
+    public void EachAudioRowReadsItsOwnNativeMuteStateAfterInvokingTheGame()
+    {
+        string source = File.ReadAllText(Path.Combine(LocalizationCatalogTests.FindRepositoryRoot(), "src", "DialogHandler.Settings.cs"));
+        Assert.Contains("() => vc.OnBgmMute(), () => vc.dst.BgmMute", source);
+        Assert.Contains("() => vc.OnSeMute(), () => vc.dst.SeMute", source);
+        Assert.Contains("() => vc.OnVoiceMute(), () => vc.dst.VoiceMute", source);
+        Assert.True(source.IndexOf("mute();") < source.IndexOf("muted = mutedState()"));
+    }
     [Fact]
     public void MutedSliderCannotPreventUnmutingButNativeMuteButtonIsStillGuarded()
     {

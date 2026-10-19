@@ -528,5 +528,7 @@
   "settings_close": "關閉設定",
   "settings_choice_help": "左右鍵選擇，Enter 套用",
   "settings_mute_changed": "已切換靜音設定",
-  "download_hd_images": "下載高解析度卡片圖像"
+  "download_hd_images": "下載高解析度卡片圖像",
+  "settings_muted": "已靜音",
+  "settings_unmuted": "已解除靜音"
 }

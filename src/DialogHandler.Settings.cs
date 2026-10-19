@@ -73,7 +73,7 @@ namespace DuelLinksAccess
                 if (slider == null) return;
                 Add(slider.gameObject, () => Loc.Get(key), () => AnnounceCurrentItem(), slider);
             }
-            void AudioRow(Slider slider, Image muteButton, string key, string muteKey, Action mute)
+            void AudioRow(Slider slider, Image muteButton, string key, string muteKey, Action mute, Func<bool?> mutedState)
             {
                 if (slider == null) return;
                 Add(slider.gameObject, () => Loc.Get(key) + ". " + Loc.Get(muteKey), () =>
@@ -83,7 +83,10 @@ namespace DuelLinksAccess
                     var selectable = muteButton.GetComponent<Selectable>();
                     if (selectable != null && !selectable.IsInteractable()) return;
                     mute();
-                    ScreenReader.Say(Loc.Get("settings_mute_changed"));
+                    bool? muted = null;
+                    try { muted = mutedState(); }
+                    catch { /* Unknown state must not be guessed from key presses. */ }
+                    ScreenReader.Say(Loc.Get(SettingsAccessibilityPolicy.MuteFeedbackKey(muted)));
                 }, slider, checkSelectable: false, announce: false);
             }
             void ToggleRow(Toggle toggle, string title)
@@ -157,9 +160,9 @@ namespace DuelLinksAccess
 
             if (Live(vc.content0))
             {
-                AudioRow(vc.bgmSlider, vc.bgmButton, "settings_bgm", "settings_bgm_mute", () => vc.OnBgmMute());
-                AudioRow(vc.seSlider, vc.seButton, "settings_se", "settings_se_mute", () => vc.OnSeMute());
-                AudioRow(vc.voiceSlider, vc.voiceButton, "settings_voice", "settings_voice_mute", () => vc.OnVoiceMute());
+                AudioRow(vc.bgmSlider, vc.bgmButton, "settings_bgm", "settings_bgm_mute", () => vc.OnBgmMute(), () => vc.dst.BgmMute);
+                AudioRow(vc.seSlider, vc.seButton, "settings_se", "settings_se_mute", () => vc.OnSeMute(), () => vc.dst.SeMute);
+                AudioRow(vc.voiceSlider, vc.voiceButton, "settings_voice", "settings_voice_mute", () => vc.OnVoiceMute(), () => vc.dst.VoiceMute);
                 ToggleRow(vc.notifyToggle, Loc.Get("settings_notify"));
                 ToggleRow(vc.nightToggle, Loc.Get("settings_night"));
                 ToggleRow(vc.loginStatusToggle, Loc.Get("settings_login"));

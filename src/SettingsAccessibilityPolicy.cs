@@ -4,6 +4,10 @@ namespace DuelLinksAccess
 {
     public static class SettingsAccessibilityPolicy
     {
+        public static string MuteFeedbackKey(bool? muted) => muted.HasValue
+            ? (muted.Value ? "settings_muted" : "settings_unmuted")
+            : "settings_mute_changed";
+
         // Layout sibling paths keep each row's controls together, including
         // off-screen rows; screen coordinates change while scrolling.
         public static int ComparePaths(IReadOnlyList<int> left, IReadOnlyList<int> right)
