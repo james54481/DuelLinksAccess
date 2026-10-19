@@ -13,11 +13,38 @@ public sealed class ReleaseClient(HttpClient http)
     public const string DllName = "DuelLinksAccess.dll";
     public const long MaxDllSize = 32 * 1024 * 1024;
 
+    public async Task<string?> GetNotesAsync(Version version, CancellationToken ct)
+    {
+        var normalized = Normalize(version);
+        string[] versions = normalized.Revision == 0
+            ? [normalized.ToString(3), normalized.ToString(4)] : [normalized.ToString(4)];
+        foreach (string tag in versions)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"https://api.github.com/repos/{Repository}/releases/tags/v{tag}");
+            request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.1");
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (response.StatusCode == HttpStatusCode.NotFound) continue;
+            response.EnsureSuccessStatusCode();
+            using var json = JsonDocument.Parse(await ReadLimitedAsync(response, 1024 * 1024, ct));
+            var root = json.RootElement;
+            string returnedTag = root.GetProperty("tag_name").GetString() ?? "";
+            if (root.GetProperty("draft").GetBoolean() || root.GetProperty("prerelease").GetBoolean()
+                || !Version.TryParse(returnedTag.TrimStart('v'), out var actual)
+                || !SameVersion(actual, version))
+                throw new InvalidDataException("更新說明與還原版本不一致。");
+            return root.TryGetProperty("body", out var body) ? body.GetString() : null;
+        }
+        return null;
+    }
+
     public async Task<UpdateRelease?> CheckAsync(CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get,
             $"https://api.github.com/repos/{Repository}/releases/latest");
-        request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.0");
+        request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.1");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
         request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);

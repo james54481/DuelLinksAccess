@@ -84,7 +84,9 @@ public sealed class UpdaterTests : IDisposable
         Assert.Equal(Fixture("Old"), File.ReadAllBytes(backup));
         Assert.EndsWith(".bak", backup);
         Assert.Single(Directory.GetFiles(Path.Combine(root, "Mods"), "*.dll"));
-        installer.Restore(root);
+        var restored = installer.Restore(root);
+        Assert.Equal(new Version(1, 4, 2, 0), restored.Version);
+        Assert.Equal(bytes, File.ReadAllBytes(restored.BackupPath));
         Assert.Equal(Fixture("Old"), File.ReadAllBytes(Target));
         Assert.Empty(Directory.GetFiles(Path.Combine(root, "Mods"), "*.tmp"));
     }
@@ -143,6 +145,57 @@ public sealed class UpdaterTests : IDisposable
     {
         using var http = new HttpClient(new Handler(_ => new(HttpStatusCode.NotFound)));
         Assert.Null(await new ReleaseClient(http).CheckAsync(default));
+    }
+    [Fact] public async Task RestoredVersionFetchesItsOwnNotesInsteadOfLatest()
+    {
+        using var http = new HttpClient(new Handler(request =>
+        {
+            Assert.EndsWith("/releases/tags/v1.4.2.1", request.RequestUri.AbsolutePath);
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(Json(tag: "v1.4.2.1")) };
+        }));
+        Assert.Equal("新版說明", await new ReleaseClient(http).GetNotesAsync(new Version(1,4,2,1), default));
+    }
+    [Fact] public async Task OriginalThreePartVersionUsesCanonicalTag()
+    {
+        using var http = new HttpClient(new Handler(request =>
+        {
+            Assert.EndsWith("/tags/v1.4.2", request.RequestUri.AbsolutePath);
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(Json(tag: "v1.4.2")) };
+        }));
+        Assert.Equal("新版說明", await new ReleaseClient(http).GetNotesAsync(new Version(1,4,2,0), default));
+    }
+    [Fact] public async Task MissingOlderReleaseReturnsNoNotes()
+    {
+        using var http = new HttpClient(new Handler(_ => new(HttpStatusCode.NotFound)));
+        Assert.Null(await new ReleaseClient(http).GetNotesAsync(new Version(1,4,2,1), default));
+    }
+    [Fact] public async Task ZeroRevisionFallsBackToFourPartTag()
+    {
+        int requests = 0;
+        using var http = new HttpClient(new Handler(request =>
+        {
+            requests++;
+            if (requests == 1) return new(HttpStatusCode.NotFound);
+            Assert.EndsWith("/tags/v1.4.2.0", request.RequestUri.AbsolutePath);
+            return new(HttpStatusCode.OK) { Content = new ByteArrayContent(Json(tag: "v1.4.2.0")) };
+        }));
+        Assert.Equal("新版說明", await new ReleaseClient(http).GetNotesAsync(new Version(1,4,2,0), default));
+        Assert.Equal(2, requests);
+    }
+    [Fact] public async Task NewerReleaseNotesCannotBeShownForOlderVersion()
+    {
+        using var http = new HttpClient(new Handler(_ => new(HttpStatusCode.OK) { Content = new ByteArrayContent(Json(tag: "v1.4.2.2")) }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => new ReleaseClient(http).GetNotesAsync(new Version(1,4,2,1), default));
+    }
+    [Fact] public async Task NetworkFailureWhileFetchingNotesDoesNotUndoSuccessfulRestore()
+    {
+        Game(); byte[] bytes = Fixture("New"); var installer = new Installer(() => false);
+        installer.Install(root, bytes, Release(bytes));
+        var restored = installer.Restore(root);
+        using var http = new HttpClient(new Handler(_ => throw new HttpRequestException("offline")));
+        await Assert.ThrowsAsync<HttpRequestException>(() => new ReleaseClient(http).GetNotesAsync(restored.Version, default));
+        Assert.Equal(Fixture("Old"), File.ReadAllBytes(Target));
+        Assert.Equal(new Version(1,4,2,0), restored.Version);
     }
     [Fact] public async Task RateLimitHasReadableError()
     {

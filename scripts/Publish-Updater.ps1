@@ -5,9 +5,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repo 'dist/updater-0.1.0-win-x64' }
-$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $project = Join-Path $repo 'updater/DuelLinksAccess.Updater/DuelLinksAccess.Updater.csproj'
+$updaterVersion = ([xml](Get-Content -LiteralPath $project -Raw)).Project.PropertyGroup.Version
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repo "dist/updater-$updaterVersion-win-x64" }
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 & $Dotnet publish $project -c Release -r win-x64 --self-contained true `
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:UseSharedCompilation=false `

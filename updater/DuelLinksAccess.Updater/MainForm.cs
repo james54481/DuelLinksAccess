@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Windows.Forms.Automation;
 
 namespace DuelLinksAccess.Updater;
 
@@ -8,7 +9,7 @@ internal sealed class MainForm : Form
     private readonly TextBox path = new() { AccessibleName = "Duel Links 遊戲安裝目錄", Dock = DockStyle.Fill };
     private readonly CheckBox automatic = new() { Text = "啟動時自動更新（遊戲關閉時）(&A)", Checked = true, AutoSize = true };
     private readonly TextBox status = new() { AccessibleName = "更新狀態", ReadOnly = true, Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical };
-    private readonly TextBox notes = new() { AccessibleName = "新版更新說明", ReadOnly = true, Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical };
+    private readonly TextBox notes = new() { AccessibleName = "版本更新說明", ReadOnly = true, Multiline = true, Dock = DockStyle.Fill, ScrollBars = ScrollBars.Vertical };
     private readonly Button browse = new() { Text = "瀏覽(&B)", AutoSize = true };
     private readonly Button check = new() { Text = "檢查更新(&C)", AutoSize = true };
     private readonly Button update = new() { Text = "下載並更新(&U)", AutoSize = true, Enabled = false };
@@ -19,10 +20,11 @@ internal sealed class MainForm : Form
     private CancellationTokenSource? cancel;
     private UpdateRelease? latest;
     private bool busy;
+    private bool completionNotified;
 
     public MainForm(bool preview = false)
     {
-        Text = "DuelLinksAccess 模組更新程式 0.1.0";
+        Text = "DuelLinksAccess 模組更新程式 0.1.1";
         if (preview) Text += "（介面預覽，不進行更新）";
         MinimumSize = new Size(650, 540);
         Size = new Size(820, 680);
@@ -42,11 +44,17 @@ internal sealed class MainForm : Form
         Wide(automatic, 3);
         Wide(new Label { Text = "更新狀態：", AutoSize = true }, 4);
         Wide(status, 5);
-        Wide(new Label { Text = "新版更新說明：", AutoSize = true }, 6);
+        Wide(new Label { Text = "版本更新說明：", AutoSize = true }, 6);
         Wide(notes, 7);
         var buttons = new FlowLayoutPanel { AccessibleName = "更新操作", AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
         var close = new Button { Text = "關閉(&X)", AutoSize = true };
         buttons.Controls.AddRange([check, update, restore, close]); Wide(buttons, 8);
+        if (preview)
+        {
+            var testNotification = new Button { Text = "測試完成通知(&T)", AutoSize = true };
+            testNotification.Click += (_, _) => NotifyCompletion("測試通知：模組更新已完成。這只是通知測試，未更新任何檔案。");
+            buttons.Controls.Add(testNotification);
+        }
         Wide(new Label { Text = "只更新既有模組；不啟動遊戲。備份可用「還原上次備份」復原。", AutoSize = true }, 9);
         Controls.Add(layout);
         path.TabIndex = 0; browse.TabIndex = 1; automatic.TabIndex = 2;
@@ -58,13 +66,7 @@ internal sealed class MainForm : Form
         restore.Click += async (_, _) =>
         {
             if (MessageBox.Show(this, "要還原最近的模組備份嗎？目前版本也會先備份。", "還原模組", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                await RunAsync(() =>
-                {
-                    string backup = installer.Restore(path.Text);
-                    Say("已還原上次備份。目前版本另已備份至：" + backup);
-                    latest = null;
-                    return Task.CompletedTask;
-                });
+                await RunAsync(RestoreAsync);
         };
         close.Click += (_, _) => Close();
         FormClosing += (_, e) => { if (busy) { e.Cancel = true; cancel?.Cancel(); Say("正在取消，完成後可關閉視窗。"); } };
@@ -97,7 +99,7 @@ internal sealed class MainForm : Form
     private async Task RunAsync(Func<Task> action)
     {
         if (busy) return;
-        busy = true; cancel = new CancellationTokenSource();
+        busy = true; completionNotified = false; cancel = new CancellationTokenSource();
         check.Enabled = update.Enabled = restore.Enabled = browse.Enabled = path.Enabled = automatic.Enabled = false;
         try { await action(); }
         catch (OperationCanceledException) { Say("作業已取消，尚未替換的檔案保持原樣。"); }
@@ -109,7 +111,7 @@ internal sealed class MainForm : Form
             check.Enabled = restore.Enabled = browse.Enabled = path.Enabled = automatic.Enabled = true;
             update.Enabled = latest != null;
             cancel.Dispose(); cancel = null;
-            status.Focus();
+            if (!completionNotified) status.Focus();
         }
     }
 
@@ -122,7 +124,7 @@ internal sealed class MainForm : Form
         File.WriteAllText(config, JsonSerializer.Serialize(new Preferences(path.Text, automatic.Checked)));
         Say($"目前模組版本 {installed}。正在檢查更新……");
         var release = await new ReleaseClient(http).CheckAsync(cancel!.Token);
-        notes.Text = release?.Notes ?? "";
+        notes.Text = release == null ? "" : $"版本 {release.Version}\r\n\r\n{release.Notes}";
         if (release == null) { Say("倉庫目前沒有可用的正式 Release，尚未更新任何檔案。"); return; }
         if (ReleaseClient.Normalize(installed) >= ReleaseClient.Normalize(release.Version))
         { Say($"目前版本 {installed}，不需要更新。"); return; }
@@ -143,6 +145,30 @@ internal sealed class MainForm : Form
         string backup = installer.Install(path.Text, bytes, release);
         latest = null;
         Say($"已更新至 {release.Version}，檔案驗證通過。原版備份：{backup}");
+        NotifyCompletion($"DuelLinksAccess 模組更新完成，目前版本 {release.Version}。");
+    }
+
+    private async Task RestoreAsync()
+    {
+        var restored = installer.Restore(path.Text);
+        latest = null;
+        string result = $"已還原至模組版本 {restored.Version}。目前版本另已備份至：{restored.BackupPath}";
+        Say(result);
+        NotifyCompletion($"DuelLinksAccess 模組已還原至版本 {restored.Version}。");
+        // Clear the newer release's text immediately, even if the network fails.
+        notes.Text = $"版本 {restored.Version}\r\n\r\n正在取得此版本的更新說明……";
+        try
+        {
+            string? text = await new ReleaseClient(http).GetNotesAsync(restored.Version, cancel!.Token);
+            notes.Text = $"版本 {restored.Version}\r\n\r\n"
+                + (string.IsNullOrWhiteSpace(text) ? "此版本未提供更新說明。" : text);
+            Say(result + (string.IsNullOrWhiteSpace(text) ? " 此版本未提供更新說明。" : " 已顯示還原版本的更新說明。"));
+        }
+        catch (Exception ex)
+        {
+            notes.Text = $"版本 {restored.Version}\r\n\r\n無法取得此版本的更新說明。";
+            Say(result + " 還原已成功，但更新說明未能取得：" + ex.Message);
+        }
     }
 
     private void Browse()
@@ -152,6 +178,21 @@ internal sealed class MainForm : Form
     }
 
     private void Say(string text) { status.Text = text; status.SelectionStart = 0; status.SelectionLength = 0; }
+
+    private void NotifyCompletion(string message)
+    {
+        bool sent = false;
+        try
+        {
+            sent = status.AccessibilityObject.RaiseAutomationNotification(
+                AutomationNotificationKind.ActionCompleted,
+                AutomationNotificationProcessing.ImportantMostRecent, message);
+        }
+        catch { /* The persistent status remains available if UIA is unavailable. */ }
+        completionNotified = true;
+        if (!sent)
+            MessageBox.Show(this, message, "作業完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
 
     private static bool GameRunning()
     {

@@ -1,5 +1,7 @@
 namespace DuelLinksAccess.Updater;
 
+public sealed record RestoreResult(Version Version, string BackupPath);
+
 public sealed class Installer(Func<bool> gameRunning)
 {
     public string Install(string gameFolder, byte[] bytes, UpdateRelease release)
@@ -13,7 +15,7 @@ public sealed class Installer(Func<bool> gameRunning)
         return Replace(mods, bytes, release.Version);
     }
 
-    public string Restore(string gameFolder)
+    public RestoreResult Restore(string gameFolder)
     {
         string mods = ModFile.ValidateGameFolder(gameFolder);
         // A backup is accepted only together with its original checksum.
@@ -25,8 +27,9 @@ public sealed class Installer(Func<bool> gameRunning)
         byte[] bytes = File.ReadAllBytes(backup);
         if (!ModFile.Hash(bytes).Equals(File.ReadAllText(backup + ".sha256").Trim(), StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("備份驗證失敗，未還原。");
-        ModFile.ReadVersion(bytes);
-        return Replace(mods, bytes);
+        var version = ModFile.ReadVersion(bytes);
+        string previousBackup = Replace(mods, bytes);
+        return new RestoreResult(version, previousBackup);
     }
 
     private string Replace(string mods, byte[] bytes, Version? updateVersion = null)
