@@ -7,11 +7,49 @@ namespace DuelLinksAccess.Updater;
 
 public sealed record UpdateRelease(Version Version, long Size, string Sha256, Uri DownloadUrl, string Notes);
 
+public sealed record HistoricalRelease(Version Version, DateTimeOffset PublishedAt, string Notes, UpdateRelease? Asset, string? UnavailableReason);
+
 public sealed class ReleaseClient(HttpClient http)
 {
     public const string Repository = "james54481/DuelLinksAccess";
     public const string DllName = "DuelLinksAccess.dll";
     public const long MaxDllSize = 32 * 1024 * 1024;
+
+    // Explicit history action only; numeric mod tags exclude updater releases.
+    public async Task<IReadOnlyList<HistoricalRelease>> GetHistoryAsync(CancellationToken ct)
+    {
+        var releases = new List<HistoricalRelease>();
+        for (int page = 1; page <= 100; page++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"https://api.github.com/repos/{Repository}/releases?per_page=100&page={page}");
+            request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.2");
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+                throw new InvalidOperationException("GitHub 暫時限制查詢次數，請稍後再試。");
+            response.EnsureSuccessStatusCode();
+            using var json = JsonDocument.Parse(await ReadLimitedAsync(response, 16 * 1024 * 1024, ct));
+            var rows = json.RootElement.EnumerateArray().ToArray();
+            foreach (var row in rows)
+            {
+                if (row.GetProperty("draft").GetBoolean() || row.GetProperty("prerelease").GetBoolean()) continue;
+                string tag = row.GetProperty("tag_name").GetString() ?? "";
+                if (!Regex.IsMatch(tag, @"^v?\d+\.\d+\.\d+(\.\d+)?$")
+                    || !Version.TryParse(tag.TrimStart('v'), out var version)) continue;
+                var date = row.GetProperty("published_at").GetDateTimeOffset();
+                string notes = row.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "";
+                UpdateRelease? asset = null; string? error = null;
+                try { asset = Parse(System.Text.Encoding.UTF8.GetBytes(row.GetRawText())); }
+                catch (Exception ex) when (ex is InvalidDataException or UriFormatException) { error = ex.Message; }
+                releases.Add(new(version, date, notes, asset, error));
+            }
+            if (rows.Length < 100)
+                return releases.OrderByDescending(r => Normalize(r.Version)).ThenByDescending(r => r.PublishedAt).ToArray();
+        }
+        throw new InvalidDataException("歷史版本清單超出查詢上限，未載入不完整清單。請稍後再試。");
+    }
 
     public async Task<string?> GetNotesAsync(Version version, CancellationToken ct)
     {
@@ -22,7 +60,7 @@ public sealed class ReleaseClient(HttpClient http)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get,
                 $"https://api.github.com/repos/{Repository}/releases/tags/v{tag}");
-            request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.1");
+            request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.2");
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
             request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -44,7 +82,7 @@ public sealed class ReleaseClient(HttpClient http)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get,
             $"https://api.github.com/repos/{Repository}/releases/latest");
-        request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.1");
+        request.Headers.UserAgent.ParseAdd("DuelLinksAccess-Updater/0.1.2");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
         request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -75,17 +113,16 @@ public sealed class ReleaseClient(HttpClient http)
         if (size <= 0 || size > MaxDllSize || !Regex.IsMatch(digest, "^sha256:[a-fA-F0-9]{64}$"))
             throw new InvalidDataException("發布檔案缺少有效大小或 GitHub SHA-256，停止更新。");
         var url = new Uri(asset.GetProperty("browser_download_url").GetString() ?? "");
-        string prefix = $"/{Repository}/releases/download/";
-        if (url.Scheme != "https" || url.Host != "github.com" || !string.IsNullOrEmpty(url.UserInfo)
-            || !url.AbsolutePath.StartsWith(prefix, StringComparison.Ordinal)
-            || Uri.UnescapeDataString(url.Segments.Last()) != DllName)
-            throw new InvalidDataException("下載位置不屬於指定倉庫。");
+        ValidateAssetUrl(url);
+        if (url.AbsolutePath != $"/{Repository}/releases/download/{Uri.EscapeDataString(tag)}/{DllName}")
+            throw new InvalidDataException("資產下載位置與正式發布標籤不一致。");
         return new(version, size, digest[7..].ToUpperInvariant(), url,
             root.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "");
     }
 
     public async Task<byte[]> DownloadAsync(UpdateRelease release, CancellationToken ct)
     {
+        ValidateAssetUrl(release.DownloadUrl);
         using var response = await http.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
         var bytes = await ReadLimitedAsync(response, release.Size, ct);
@@ -100,6 +137,16 @@ public sealed class ReleaseClient(HttpClient http)
             throw new InvalidDataException("下載檔案大小或 SHA-256 不符，原有模組未替換。");
         var version = ModFile.ReadVersion(bytes);
         if (!SameVersion(version, release.Version)) throw new InvalidDataException("DLL 版本與發布標籤不符。");
+    }
+
+    private static void ValidateAssetUrl(Uri url)
+    {
+        string prefix = $"/{Repository}/releases/download/";
+        if (!url.IsAbsoluteUri || url.Scheme != "https" || url.Host != "github.com" || !string.IsNullOrEmpty(url.UserInfo)
+            || !string.IsNullOrEmpty(url.Query) || !string.IsNullOrEmpty(url.Fragment)
+            || !url.AbsolutePath.StartsWith(prefix, StringComparison.Ordinal)
+            || Uri.UnescapeDataString(url.Segments.Last()) != DllName)
+            throw new InvalidDataException("下載位置或檔案名稱不屬於指定倉庫的正式資產。");
     }
 
     public static bool SameVersion(Version a, Version b) => Normalize(a) == Normalize(b);

@@ -1,53 +1,72 @@
-# DuelLinksAccess 模組更新程式
+# DuelLinksAccess 更新程式 0.1.2
 
-獨立的 Windows 64 位元桌面程式，版本 0.1.1。更新來源固定為
-`james54481/DuelLinksAccess` 的最新正式 GitHub Release。原始碼位於 `updater/`，沿用本專案 MIT 授權。
+以已發布的 0.1.1 為基礎，沿用 GitHub Releases 檢查、SHA-256、DLL 版本驗證與既有備份機制。本版採完全手動更新，提供 GitHub 正式歷史版本安裝與離線緊急還原。
 
-下載：[更新程式 0.1.1](https://github.com/james54481/DuelLinksAccess/releases/tag/updater-v0.1.1)。更新程式以獨立標籤發布，不設為模組的最新正式 Release，以免影響 DLL 更新查詢。
+## 啟動與檢查更新
 
-## 使用方式
+1. 解壓完整 ZIP，執行 `DuelLinksAccess.Updater.exe`。不需另外安裝 .NET。
+2. 啟動只讀取已儲存的遊戲路徑及本機 DLL 版本。不連線 GitHub，也不下載或安裝。
+3. 沒有已存路徑時，使用「瀏覽」或輸入遊戲安裝根目錄，例如 `C:\Program Files (x86)\Steam\steamapps\common\Yu-Gi-Oh! Duel Links`。不要選 Mods 子資料夾。
+4. 按「檢查更新」才連接指定倉庫 `james54481/DuelLinksAccess` 的最新正式模組 Release。
+5. 沒有新版時顯示「目前已經是最新版本」及目前版本號。找到新版時顯示新版版本號、完整更新說明，並將焦點移到說明文字欄。
+6. NVDA 會收到「發現新版本，請先閱讀更新說明，再決定是否下載安裝」的無障礙通知。說明亦保留在唯讀文字欄，可用方向鍵逐行閱讀。
+7. 閱讀後按「下載並更新」。此時才顯示「確定要下載並安裝此版本嗎？」及目前／目標版本，預設選擇「否」。
+8. 選「是」後才下載、驗證、備份並安裝。選「否」不改動模組，保留更新說明並返回說明欄。
 
-1. 解壓縮完整更新程式壓縮檔，執行 `DuelLinksAccess.Updater.exe`。不必放在遊戲資料夾內，也不必安裝 .NET。
-2. 程式會尋找 Steam 的遊戲安裝位置；找不到時，使用「瀏覽」或直接輸入含 `dlpc.exe` 的資料夾。
-3. 初次確認路徑後，按「檢查更新」。已記住路徑的使用者下次開啟便會自動檢查。
-4. 預設勾選「啟動時自動更新」。若有新版且遊戲已關閉，程式會下載、驗證、備份並替換模組；取消勾選後改由「下載並更新」按鈕操作。勾選狀態會在下一次檢查更新時儲存。
-5. 若遊戲仍在執行，程式會提示先關閉遊戲，再按「下載並更新」。程式不會終止或啟動遊戲，也不會在背景長駐等待。
-6. 更新有問題時，關閉遊戲，按「還原上次備份」並確認。還原也會先備份目前版本。還原完成後顯示實際還原的 DLL 版本，並從對應 GitHub 標籤取得該版本說明；若未提供說明或連線失敗，會清除新版說明並明確提示，還原結果不受影響。
+已完全移除自動更新核取方塊與自動安裝邏輯。舊設定檔中的 `Automatic` 欄位會被忽略；下次手動檢查或選好路徑儲存時，只保留 `GamePath`。
 
-本程式只更新**已安裝**的模組，不負責安裝 MelonLoader、Tolk、NVDA 或首次安裝模組。不會自行提高權限；若安裝目錄拒絕寫入，會提示使用者手動以系統管理員身分執行。
+## 歷史版本管理
 
-Tab／Shift+Tab 瀏覽欄位與按鈕，Enter 或空白鍵啟動按鈕。快捷鍵：Alt+B 瀏覽、Alt+A 自動更新、Alt+C 檢查、Alt+U 更新、Alt+R 還原、Alt+X 關閉。狀態與更新說明均為可聚焦、唯讀的文字欄位，可使用 NVDA 閱讀與複製；更新及還原成功時會發送 Windows 無障礙完成通知，包含模組版本號，供 NVDA 即時報讀，不依賴使用者切回視窗。系統不支援通知時改用完成對話框；其他作業完成時焦點移到更新狀態。
+- 按「歷史版本管理」才連線指定倉庫的 GitHub Releases，逐頁讀取所有正式模組版本，不顯示草稿、預發布或更新器自身的 Release。
+- 依數字版本由新到舊排列，顯示版本號與本機時區的發布日期。上下鍵選取版本，Tab 閱讀完整更新說明，再 Tab 到「下載並安裝選定版本」。
+- 說明與清單一起取得；切換項目不需再次連線。缺少唯一的 DLL、有效 SHA-256 或安全下載位置者，保留更新說明並顯示無法安裝原因，停用安裝按鈕。
+- 按下載按鈕後顯示目前及目標版本。允許升版、降版與同版本重裝，但一律先確認；預設「否」，選「否」或按 Escape／取消均保留清單且不修改 DLL。
+- 確認後才下載，驗證檔名、指定倉庫與標籤、大小、SHA-256、DLL 組件名稱與版本，再檢查遊戲已關閉、備份目前 DLL 並安全替換。
+- 清單連線或解析失敗時明確顯示錯誤，不安裝任何檔案。不使用不完整的分頁結果。
 
-本機偏好儲存在 `%LOCALAPPDATA%\DuelLinksAccessUpdater\settings.json`，內容只有遊戲路徑與自動更新選項。
+## 離線緊急還原
 
-## 發布模組新版時必須做的事
+- 「還原上次備份」仍從本機最近的有效備份還原，完全不連線 GitHub。
+- 先顯示目前版本、目標版本與備份時間供確認，再重新驗證路徑、SHA-256 與 DLL 組件版本。
+- 確認遊戲已關閉後，先備份目前 DLL，再還原；原有備份保留，無效備份不刪除。
+- 完成後顯示還原版本。若本次工作階段已取得該版更新說明則顯示快取，否則明確提示無快取，仍不連線。
 
-- 使用正式數字版本，例如 `1.4.2.1`，同步修改模組專案版本與 `MelonInfo`，通過測試後重新編譯。
-- 在自己的倉庫建立正式 Release，標籤使用 `v1.4.2.1` 等形式。草稿及預發布版本不會更新；目前不支援帶 `-beta` 或 `-zhTW` 後綴的標籤。
-- 附加名為 **`DuelLinksAccess.dll`** 的獨立附件。只放 ZIP 或原始碼不足以供更新程式使用。
-- 確認 GitHub Release API 的附件 `size` 與 `digest: sha256:...` 有效。缺少摘要時更新程式會停止，不略過驗證。
-- Release 標籤必須與 DLL 的組件版本一致。每次提供新版 DLL 都須提高版本；同版本不同雜湊不會自動覆蓋。
-- 附上更新日誌、對應來源與授權文件；不要附加遊戲、Unity 組件或帳號日誌。
-- 更新程式本身可另外提供 ZIP。它目前只更新模組 DLL，不會自我更新。
+## 鍵盤與 NVDA
 
-正式版本須提供上述 DLL 附件。沒有正式 Release 或缺少正確附件時會顯示說明，不會替換檔案。
+Tab／Shift+Tab 瀏覽欄位與按鈕，Enter 或空白鍵啟動按鈕。
+Alt+B 瀏覽、Alt+C 檢查更新、Alt+U 下載並更新、Alt+R 還原上次備份、Alt+H 歷史版本管理、Alt+X 關閉。
+歷史管理內使用上下鍵選取、Tab 閱讀說明、Alt+I 下載並安裝選定版本、Esc 或 Alt+X 關閉；確認框內 Escape 取消。
 
-## 驗證、備份與限制
+更新與還原成功時會送出含版本號的 Windows 無障礙完成通知；不支援通知時顯示完成對話框。可以用 `--preview` 預覽主視窗，並按 Alt+T 測試完成通知；預覽模式不連線或修改遊戲。
 
-- 固定來源為上述倉庫，附件須使用 HTTPS GitHub 下載位置。
-- 嚴格檢查下載大小、GitHub SHA-256、有效 .NET 組件名稱 `DuelLinksAccess` 與版本；不載入或執行下載的 DLL 進行驗證。
-- 更新前與暫存完成後檢查 `dlpc` 程序。另以檔案鎖阻擋兩個更新程式同時替換；檔案已被鎖定時停止。
-- 在 Mods 中建立暫存檔，落盤並驗證後，以同磁碟原子替換產生備份；替換後再驗證，後續步驟失敗時嘗試還原原檔。
-- 備份使用 `DuelLinksAccess.backup.*.bak` 與 `.sha256`，避免 MelonLoader 把備份當成另一個模組載入。備份不會自動清除。
-- 拒絕更新含符號連結或重新解析點的路徑。只有 `Mods\DuelLinksAccess.dll`、更新程式自己的暫存、鎖定與備份檔會被寫入。
-- SHA-256 確認檔案與倉庫發布內容一致，並非作者的獨立數位簽章；維護者須保護 GitHub 帳號與發布權限。此測試版執行檔尚未簽章。
-- 自動測試使用合成 DLL 及隔離暫存資料夾，不使用真實遊戲檔案。2026-10-19 共 321 項測試通過（含 38 項更新程式測試），更新程式與模組編譯皆零警告、零錯誤。已檢查預覽視窗的無障礙名稱；仍需 NVDA 使用者試用，以及首次正式 Release 的實際下載驗證。
+## 檔案、權限與安全檢查
 
-## 開發與封裝
+只更新已安裝的 `Mods\DuelLinksAccess.dll`，不負責首次安裝模組或 MelonLoader。
+安裝前仍須通過下載大小、GitHub SHA-256、DLL 組件名稱與版本核對，並檢查遊戲執行狀態。驗證只讀取 DLL 中繼資料，不執行 DLL。
 
-先執行 `dotnet test tests/DuelLinksAccess.Tests/DuelLinksAccess.Tests.csproj -c Release`。
-再執行 `scripts/Publish-Updater.ps1`。腳本會建置免安裝 .NET 的 Windows x64 單一執行檔，附上說明、授權及 SHA-256，並產生 ZIP。它不會建立 GitHub Release，也不會部署到遊戲。
+沿用同磁碟暫存驗證、原子替換與 `.bak` 備份，備份附 `.sha256`。不以 `.dll` 作為備份副檔名，避免被當作另一份模組載入。兩個更新程式同時執行時，以檔案鎖阻擋重複替換。符號連結或重新解析點路徑不允許更新。
 
-介面檢查可使用 `DuelLinksAccess.Updater.exe --preview`；此模式禁止連線與更新，可按 Alt+T 測試完成通知，不修改檔案。
+偏好設定位置為 `%LOCALAPPDATA%\DuelLinksAccessUpdater\settings.json`，只保存遊戲路徑。程式不自行提權；權限不足時會提示使用者手動以系統管理員身分執行。
 
-實作參考：[GitHub Releases API](https://docs.github.com/en/rest/releases/releases)、[Windows Forms 無障礙控制項屬性](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/controls/provide-accessibility-information)。
+本程式只更新模組，不會自我更新。GitHub 帳號、發布來源及檔案安全仍由維護者負責；SHA-256 不等於作者數位簽章。
+
+## 開發與發布
+
+原始碼位於 `updater/`，沿用本專案 MIT 授權，內附微軟 .NET 元件聲明。
+先執行 `dotnet test tests/DuelLinksAccess.Tests/DuelLinksAccess.Tests.csproj -c Release`，再執行 `scripts/Publish-Updater.ps1` 封裝 Windows x64 ZIP。
+此腳本不會部署到遊戲或建立 GitHub Release。
+
+更新程式應以獨立標籤發布，不能設為模組 latest；模組更新只接受數字版本標籤，如 `v1.4.2.2`，且 Release 必須提供名稱為 `DuelLinksAccess.dll` 的獨立附件，含有效 GitHub SHA-256 摘要。DLL 組件版本必須與標籤相符。
+
+正式下載：[更新程式 0.1.2](https://github.com/james54481/DuelLinksAccess/releases/tag/updater-v0.1.2)。下載 `DuelLinksAccess-Updater-0.1.2-win-x64.zip`，解壓後執行；舊版 0.1.1 仍保留。
+
+## 驗證狀態（2026-10-20）
+
+- 354 項自動測試通過，涵蓋 GitHub 分頁、正式版本篩選與數字排序、下載驗證、升版、降版、同版重裝及備份還原。
+- 在隔離測試目錄注入替換後驗證失敗，確認升版、降版及重裝都能回復原 DLL；亦測試下載失敗、遊戲執行中及檔案鎖阻擋。
+- 實際 GitHub 清單載入 1.4.2.2、1.4.2.1，已核對方向鍵切換、Tab 閱讀、Enter 確認及取消流程。
+- 真實遊戲 DLL 與 MelonLoader 未修改；完整替換測試僅使用隔離目錄內的測試 DLL。
+- 使用者已回報此測試版操作通過，確認發布；不代表所有電腦環境均已驗證。
+- 原 0.1.2 測試包與已發布的 0.1.1 保留；正式包為 `DuelLinksAccess-Updater-0.1.2-win-x64.zip`。
+
+參考：[GitHub Releases API](https://docs.github.com/en/rest/releases/releases)、[Windows Forms 無障礙資訊](https://learn.microsoft.com/en-us/dotnet/desktop/winforms/controls/provide-accessibility-information)。

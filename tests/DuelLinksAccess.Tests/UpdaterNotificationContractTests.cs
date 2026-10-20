@@ -9,19 +9,19 @@ public sealed class UpdaterNotificationContractTests
     [Fact]
     public void CompletedInstallationRaisesNotificationOnlyAfterSuccessfulReplacement()
     {
-        string install = Source[Source.IndexOf("private async Task InstallAsync()")..Source.IndexOf("private async Task RestoreAsync()")];
+        string install = Source[Source.IndexOf("private async Task InstallAsync()")..Source.IndexOf("private async Task RestoreSelectedAsync(")];
         Assert.True(install.IndexOf("installer.Install(") < install.IndexOf("NotifyCompletion("));
         Assert.Contains("模組更新完成，目前版本 {release.Version}", install);
     }
 
     [Fact]
-    public void RestoredVersionIsAnnouncedBeforeWaitingForOlderReleaseNotes()
+    public void RestoredVersionIsAnnouncedWithOfflineNotes()
     {
-        string restore = Source[Source.IndexOf("private async Task RestoreAsync()")..Source.IndexOf("private void Browse()")];
+        string restore = Source[Source.IndexOf("private async Task RestoreSelectedAsync(")..Source.IndexOf("private void Browse()")];
         Assert.True(restore.IndexOf("installer.Restore(") < restore.IndexOf("NotifyCompletion("));
-        Assert.True(restore.IndexOf("NotifyCompletion(") < restore.IndexOf("GetNotesAsync("));
+        Assert.DoesNotContain("GetVersionNotesAsync(", restore);
         Assert.Contains("模組已還原至版本 {restored.Version}", restore);
-        Assert.True(restore.IndexOf("notes.Text =") < restore.IndexOf("GetNotesAsync("));
+        Assert.Contains("notesCache.TryGetValue", restore);
     }
 
     [Fact]
