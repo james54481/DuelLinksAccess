@@ -530,5 +530,10 @@
   "settings_mute_changed": "已切換靜音設定",
   "download_hd_images": "下載高解析度卡片圖像",
   "settings_muted": "已靜音",
-  "settings_unmuted": "已解除靜音"
+  "settings_unmuted": "已解除靜音",
+  "gate_level": "對手等級 {0}",
+  "gate_level_selected": "對手等級 {0}，已選取",
+  "duel_phase_requested": "已請求切換至{0}，等待遊戲回應。",
+  "duel_phase_unavailable": "目前無法切換階段，請先完成選擇或等待遊戲回應。",
+  "duel_phase_request_uncertain": "無法確認階段切換請求，請先確認目前階段再重試。"
 }

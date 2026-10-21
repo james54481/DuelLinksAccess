@@ -453,6 +453,14 @@ namespace DuelLinksAccess
                         Label = PurchaseAccessibility.Label(button), Type = ItemType.Button });
                 }
 
+                // Gate level tabs are YgomTabButtons, not Unity Selectables.
+                foreach (var tab in GateLevelAccessibility.Find(_screenRoot))
+                {
+                    _items.RemoveAll(i => i.Go == tab.gameObject || i.Go.transform.IsChildOf(tab.transform));
+                    _items.Add(new ScreenItem { Go = tab.gameObject,
+                        Label = GateLevelAccessibility.Label(tab), Type = ItemType.Button });
+                }
+
                 // Also scan the header/footer area (separate from content VC)
                 var headerRoot = GetHeaderRoot();
                 if (headerRoot != null && headerRoot != _screenRoot)
@@ -2110,6 +2118,24 @@ namespace DuelLinksAccess
                 _items.RemoveAt(_focusIndex);
                 if (_focusIndex >= _items.Count) _focusIndex = Math.Max(0, _items.Count - 1);
                 return;
+            }
+
+            if (_screenRoot != null && _screenRoot.name == "Gate")
+            {
+                try
+                {
+                    if (GateLevelAccessibility.TryActivate(item.Go))
+                    {
+                        _tabRescanDelay = 0.5f;
+                        return;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[GateLevel] native tab activation failed: {ex}");
+                    ScreenReader.Say(Loc.Get("screen_click_error"));
+                    return;
+                }
             }
 
             // Map objects: call TapObject on the MapObjectBase component

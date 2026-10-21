@@ -530,5 +530,10 @@
   "settings_mute_changed": "Mute setting toggled",
   "download_hd_images": "Download high-resolution card images",
   "settings_muted": "Muted",
-  "settings_unmuted": "Unmuted"
+  "settings_unmuted": "Unmuted",
+  "gate_level": "Opponent level {0}",
+  "gate_level_selected": "Opponent level {0}, selected",
+  "duel_phase_requested": "Requested {0}. Waiting for the game.",
+  "duel_phase_unavailable": "Phase change is unavailable. Finish the current selection or wait for the game.",
+  "duel_phase_request_uncertain": "Unable to confirm the phase request. Check the current phase before retrying."
 }

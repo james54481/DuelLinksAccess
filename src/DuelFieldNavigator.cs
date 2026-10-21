@@ -4462,372 +4462,143 @@ namespace DuelLinksAccess
 
         #region Phase Advancement
 
+        private bool _phaseRequestPending;
+
         private void AdvancePhase()
         {
+            if (_phaseRequestPending) return;
+            _phaseRequestPending = true;
+            MelonLogger.Msg($"[PhaseAdvance] P requested phase={DuelState.CurrentPhase} turn={DuelState.TurnNumber} player={DuelState.CurrentTurnPlayer}");
+            MelonCoroutines.Start(AdvancePhaseNative());
+        }
+
+        // One P press dispatches at most one native phase action. Never send an
+        // engine command and then another UI command, or interpret a delayed
+        // server reply as permission to skip Battle and end the turn.
+        private IEnumerator AdvancePhaseNative()
+        {
+            var request = AdvancePhaseNativeCore();
             try
             {
-                uint movable = Il2CppYgomGame.Duel.Engine.DLL_DuelComGetMovablePhase();
-                if (movable == 0)
+                while (true)
                 {
-                    // Engine API locked (tutorial mode) — call game methods directly
-                    AdvancePhaseDirect();
-                    return;
-                }
-
-                uint currentPhaseVal = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCurrentPhase();
-                int current = (int)currentPhaseVal;
-
-                // Try phases in forward order after current
-                Il2CppYgomGame.Duel.Engine.Phase[] phaseOrder =
-                {
-                    Il2CppYgomGame.Duel.Engine.Phase.Main1,
-                    Il2CppYgomGame.Duel.Engine.Phase.Battle,
-                    Il2CppYgomGame.Duel.Engine.Phase.Main2,
-                    Il2CppYgomGame.Duel.Engine.Phase.End,
-                };
-
-                foreach (var phase in phaseOrder)
-                {
-                    if ((int)phase > current && (movable & (1u << (int)phase)) != 0)
+                    bool more;
+                    try { more = request.MoveNext(); }
+                    catch (Exception ex)
                     {
-                        Il2CppYgomGame.Duel.Engine.DLL_DuelComMovePhase((int)phase);
-                        string phaseName = DuelEventAnnouncer.GetPhaseName(phase);
-                        ScreenReader.Say(Loc.Get("duel_advancing_phase", phaseName));
-                        return;
+                        MelonLogger.Warning($"[PhaseAdvance] native state read failed: {ex}");
+                        ScreenReader.Say(Loc.Get("duel_phase_request_uncertain"));
+                        yield break;
                     }
+                    if (!more) yield break;
+                    yield return request.Current;
                 }
-
-                // Nothing after current available — try End Phase as fallback
-                if ((movable & (1u << (int)Il2CppYgomGame.Duel.Engine.Phase.End)) != 0)
-                {
-                    Il2CppYgomGame.Duel.Engine.DLL_DuelComMovePhase(
-                        (int)Il2CppYgomGame.Duel.Engine.Phase.End);
-                    string endName = DuelEventAnnouncer.GetPhaseName(
-                        Il2CppYgomGame.Duel.Engine.Phase.End);
-                    ScreenReader.Say(Loc.Get("duel_advancing_phase", endName));
-                    return;
-                }
-
-                ScreenReader.Say(Loc.Get("duel_cant_advance_phase"));
             }
-            catch (Exception ex)
+            finally
             {
-                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"AdvancePhase error: {ex.Message}");
-                ScreenReader.Say(Loc.Get("duel_phase_error"));
+                (request as IDisposable)?.Dispose();
+                _phaseRequestPending = false;
             }
         }
 
-        /// <summary>
-        /// Retry-escalation state for AdvancePhaseDirect. Static because the
-        /// caller is also static and the duel is a singleton flow. Used to
-        /// detect the "user pressed P twice from the same Main Phase with no
-        /// phase change in between" pattern and pivot the second attempt to
-        /// End Phase — handles Duel Links Speed Duel's first-player-turn-1
-        /// no-Battle-Phase rule without needing a reliable up-front "is BP
-        /// legal?" probe (which we don't have in PvP).
-        /// </summary>
-        private static float _lastPhaseAttemptTime;
-        private static Il2CppYgomGame.Duel.Engine.Phase _lastPhaseAttemptTarget
-            = Il2CppYgomGame.Duel.Engine.Phase.Null;
-        private static Il2CppYgomGame.Duel.Engine.Phase _lastPhaseAttemptFromPhase
-            = Il2CppYgomGame.Duel.Engine.Phase.Null;
-
-        /// <summary>
-        /// Advances phase by calling game methods directly (bypasses UI/tutorial locks).
-        /// PvP order: PhaseButtonViewController.OnClickPhase() (knows its own
-        /// nextPhase and routes through the server). Single-player fallback:
-        /// EmotionalCommand.OnBattlePhase/OnEndPhase, then DuelMenu.ChangePhase.
-        /// </summary>
-        private static void AdvancePhaseDirect()
+        private IEnumerator AdvancePhaseNativeCore()
         {
             try
             {
-                // DLL_DuelGetCurrentPhase isn't authoritative in PvP — the
-                // server runs the phase machine and the local engine's value
-                // stays stuck at Draw=0. DuelState tracks phase from
-                // PhaseChange events, which works in both modes.
-                var currentPhase = DuelState.CurrentPhase
-                    != Il2CppYgomGame.Duel.Engine.Phase.Null
-                    ? DuelState.CurrentPhase
-                    : (Il2CppYgomGame.Duel.Engine.Phase)
-                        (int)Il2CppYgomGame.Duel.Engine.DLL_DuelGetCurrentPhase();
-                uint currentPhaseVal = (uint)currentPhase;
-
-                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"AdvancePhaseDirect: currentPhase={currentPhase} ({currentPhaseVal})");
-
-                // Diagnostic: capture input/selection state at P-press time.
-                // If the user just bailed out of a "no actions available" tap
-                // and the duel is wedged, we expect to see curInputType != the
-                // expected MainPhase / BattlePhase value here, or HandCards
-                // still in a selected state.
-                try
+                if (!DuelState.InDuel || DuelState.DuelEnded) yield break;
+                int turn = DuelState.TurnNumber;
+                var client = Il2CppYgomGame.Duel.DuelClient.instance;
+                var worker = client?.worker2d;
+                if (worker == null || (worker.curInputType != Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase
+                    && worker.curInputType != Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase))
                 {
-                    var client = Il2CppYgomGame.Duel.DuelClient.instance;
-                    var worker = client?.worker2d;
-                    var handCards = client?.duelHUD?.nearHandCard;
-                    string inputType = "?";
-                    try { inputType = worker?.curInputType.ToString() ?? "?"; } catch { }
-                    string handState = "n/a";
-                    if (handCards != null)
-                    {
-                        try
-                        {
-                            handState = $"EnableControle={handCards.EnableControle}"
-                                + $" m_EnableSelect={handCards.m_EnableSelect}"
-                                + $" m_IsBusy={handCards.m_IsBusy}"
-                                + $" m_TouchMode={handCards.m_TouchMode}";
-                        }
-                        catch { }
-                    }
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        $"AdvancePhaseDirect state: curInputType={inputType} hand=[{handState}]");
-                }
-                catch { }
-
-                // First try: write a phase-move request to the engine's
-                // command queue. In single-player this works whenever the
-                // phase is movable. In PvP the engine forwards the request
-                // to the server, which then sends back a PhaseChange event.
-                // DLL_DuelComGetMovablePhase returns 0 in PvP but the move
-                // call itself can still succeed — the bitmask check in
-                // AdvancePhase() is too conservative for PvP.
-                Il2CppYgomGame.Duel.Engine.Phase target
-                    = Il2CppYgomGame.Duel.Engine.Phase.Null;
-                if (currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Main1
-                    || currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Main2)
-                {
-                    target = Il2CppYgomGame.Duel.Engine.Phase.Battle;
-                }
-                else if (currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Battle)
-                {
-                    target = Il2CppYgomGame.Duel.Engine.Phase.End;
+                    MelonLogger.Msg($"[PhaseAdvance] blocked input={worker?.curInputType.ToString() ?? "missing"}");
+                    ScreenReader.Say(Loc.Get("duel_phase_unavailable"));
+                    yield break;
                 }
 
-                // Retry-escalation for the first-player-turn-1 lockup:
-                // dirBpButton.activeInHierarchy is unreliable as a "BP legal?"
-                // probe because the button lives inside a collapsed phase
-                // menu — it's almost always inactive, including during normal
-                // turns when BP IS legal. So we can't tell up-front whether
-                // the server will accept Battle.
-                //
-                // Instead: if the previous P press also asked for Battle from
-                // the SAME currentPhase and the phase still hasn't moved,
-                // escalate this attempt to End Phase. Effect: turn-1 first-
-                // player presses P once, hears "Moving to Battle Phase" but
-                // nothing happens, presses P again, hears "Moving to End
-                // Phase" and the server accepts. Normal turns transition on
-                // the first press so the escalation never triggers.
-                if (target == Il2CppYgomGame.Duel.Engine.Phase.Battle
-                    && _lastPhaseAttemptTarget == Il2CppYgomGame.Duel.Engine.Phase.Battle
-                    && _lastPhaseAttemptFromPhase == currentPhase
-                    && (UnityEngine.Time.unscaledTime - _lastPhaseAttemptTime) < 10f)
+                bool failed;
+                if (TryNativePhaseClick(out failed) || failed) yield break;
+                var em = Il2CppYgomGame.Duel.EmotionalCommand.Instance;
+                if (em == null || em.dirPhaseButton == null || !em.dirPhaseButton.gameObject.activeInHierarchy
+                    || !em.dirPhaseButton.interactable)
                 {
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        "  Previous Battle Phase attempt didn't advance — " +
-                        "escalating retry to End Phase");
-                    target = Il2CppYgomGame.Duel.Engine.Phase.End;
+                    MelonLogger.Msg("[PhaseAdvance] no enabled native phase opener");
+                    ScreenReader.Say(Loc.Get("duel_phase_unavailable"));
+                    yield break;
                 }
-                _lastPhaseAttemptTime = UnityEngine.Time.unscaledTime;
-                _lastPhaseAttemptTarget = target;
-                _lastPhaseAttemptFromPhase = currentPhase;
-
-                if (target != Il2CppYgomGame.Duel.Engine.Phase.Null)
+                if (!OpenNativePhaseMenu(em)) yield break;
+                // The game animates and enables its phase choices asynchronously.
+                // Only wait for the menu; never retry a phase request automatically.
+                for (int i = 0; i < 12; i++)
                 {
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        $"  Trying DLL_DuelComMovePhase({target} = {(int)target})");
-                    try
-                    {
-                        Il2CppYgomGame.Duel.Engine.DLL_DuelComMovePhase((int)target);
-                    }
-                    catch (Exception ex)
-                    {
-                        DebugLogger.Log(LogCategory.Game, "FieldNav",
-                            $"  DLL_DuelComMovePhase threw: {ex.Message}");
-                    }
-
-                    // Scene scan: log every ACTIVE UI.Button whose name or
-                    // ancestor name hints at phase control. This is the
-                    // user's "what would a mouse click do?" lookup — once
-                    // we identify the right Button by name, we can target
-                    // it directly via onClick.Invoke().
-                    if (DiagnosticPolicy.ShouldCollect(Main.DebugMode))
-                        DumpPhaseRelatedButtons();
+                    yield return new WaitForSecondsRealtime(0.1f);
+                    if (!DuelState.InDuel || DuelState.DuelEnded || DuelState.TurnNumber != turn) yield break;
+                    if (TryNativePhaseClick(out failed) || failed) yield break;
                 }
+                MelonLogger.Msg("[PhaseAdvance] native menu supplied no enabled phase action");
+                ScreenReader.Say(Loc.Get("duel_phase_unavailable"));
+            }
+            finally { _phaseRequestPending = false; }
+        }
 
-                // PvP-aware path: the game's own PhaseButtonViewController knows
-                // its nextPhase and OnClickPhase() routes through the server.
-                // DLL_DuelGetCurrentPhase isn't authoritative in PvP (server runs
-                // the phase machine), so prefer this over heuristics on the
-                // cached engine phase.
-                var phaseBtn = UnityEngine.Object.FindObjectOfType<
-                    Il2CppYgomGame.Duel.PhaseButtonViewController>();
-                if (phaseBtn != null)
-                {
-                    var next = phaseBtn.nextPhase;
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        $"Calling PhaseButtonViewController.OnClickPhase() (nextPhase={next})");
-                    phaseBtn.OnClickPhase();
-                    ScreenReader.Say(Loc.Get("duel_advancing_phase",
-                        DuelEventAnnouncer.GetPhaseName(next)));
-                    return;
-                }
-
-                // EmotionalCommand owns the in-game phase buttons. The
-                // direct method calls (OnBattlePhase / OnEndPhase) are no-ops
-                // in PvP — the server doesn't see them as a phase request.
-                // The actual UI button click fires the right server message,
-                // so we invoke onClick on the Button. There can be multiple
-                // EmotionalCommand instances (one per player or per
-                // perspective); iterate and try each, ignoring the
-                // interactable flag (onClick.Invoke bypasses it anyway).
-                //
-                // Derive isBattleAdvance / isEndAdvance from `target` (post-
-                // pivot) rather than currentPhase so that when we've decided
-                // to skip BP and request End, the EmCmd loop targets
-                // dirEpButton accordingly.
-                bool isBattleAdvance =
-                    target == Il2CppYgomGame.Duel.Engine.Phase.Battle;
-                bool isEndAdvance =
-                    target == Il2CppYgomGame.Duel.Engine.Phase.End;
-
-                if (isBattleAdvance || isEndAdvance)
-                {
-                    var targetPhase = isBattleAdvance
-                        ? Il2CppYgomGame.Duel.Engine.Phase.Battle
-                        : Il2CppYgomGame.Duel.Engine.Phase.End;
-                    string btnName = isBattleAdvance ? "dirBpButton" : "dirEpButton";
-
-                    var allEm = UnityEngine.Object.FindObjectsOfType<
-                        Il2CppYgomGame.Duel.EmotionalCommand>(includeInactive: true);
-                    int emCount = allEm?.Length ?? 0;
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        $"AdvancePhaseDirect: found {emCount} EmotionalCommand instance(s)");
-
-                    bool fired = false;
-                    if (allEm != null)
-                    {
-                        for (int i = 0; i < allEm.Length; i++)
-                        {
-                            var em = allEm[i];
-                            if (em == null) continue;
-
-                            UnityEngine.UI.Button btn = null;
-                            try
-                            {
-                                btn = isBattleAdvance ? em.dirBpButton : em.dirEpButton;
-                            }
-                            catch { }
-                            if (btn == null) continue;
-
-                            bool active = false, interactable = false;
-                            try { active = btn.gameObject != null
-                                && btn.gameObject.activeInHierarchy; } catch { }
-                            try { interactable = btn.interactable; } catch { }
-
-                            DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                $"  EmCmd[{i}].{btnName}: active={active} interactable={interactable} " +
-                                $"hasOnClick={btn.onClick != null}");
-
-                            // Prefer active+interactable, but if none such found
-                            // after the loop we fall back to firing on the first
-                            // available below.
-                            if (active && interactable && btn.onClick != null)
-                            {
-                                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                    $"  -> Firing onClick.Invoke() on EmCmd[{i}].{btnName}");
-                                try { btn.onClick.Invoke(); fired = true; break; }
-                                catch (Exception ex)
-                                {
-                                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                        $"  onClick.Invoke threw: {ex.Message}");
-                                }
-                            }
-                        }
-
-                        // No active+interactable button found — try invoking
-                        // any non-null one anyway (onClick.Invoke bypasses
-                        // interactable). The button being inactive usually
-                        // means the wrong EmCmd instance, but the listener
-                        // might still route correctly. Single-player works
-                        // through this path even when the button is inactive.
-                        if (!fired)
-                        {
-                            for (int i = 0; i < allEm.Length && !fired; i++)
-                            {
-                                var em = allEm[i];
-                                if (em == null) continue;
-                                UnityEngine.UI.Button btn = null;
-                                try { btn = isBattleAdvance ? em.dirBpButton : em.dirEpButton; }
-                                catch { }
-                                if (btn == null || btn.onClick == null) continue;
-                                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                    $"  Fallback: firing onClick.Invoke() on inactive EmCmd[{i}].{btnName}");
-                                try { btn.onClick.Invoke(); fired = true; }
-                                catch (Exception ex)
-                                {
-                                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                        $"  onClick.Invoke threw: {ex.Message}");
-                                }
-                            }
-                        }
-
-                        // Last resort: direct method call on the first instance
-                        if (!fired && allEm.Length > 0 && allEm[0] != null)
-                        {
-                            DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                "  Last resort: direct EmotionalCommand method call");
-                            try
-                            {
-                                if (isBattleAdvance) allEm[0].OnBattlePhase();
-                                else allEm[0].OnEndPhase();
-                                fired = true;
-                            }
-                            catch (Exception ex)
-                            {
-                                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                    $"  Direct method threw: {ex.Message}");
-                            }
-                        }
-                    }
-
-                    if (fired)
-                    {
-                        ScreenReader.Say(Loc.Get("duel_advancing_phase",
-                            DuelEventAnnouncer.GetPhaseName(targetPhase)));
-                        return;
-                    }
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        "AdvancePhaseDirect: no EmotionalCommand button worked");
-                }
-
-                // Fallback: DuelMenu.ChangePhase directly
-                var duelMenu = UnityEngine.Object.FindObjectOfType<
-                    Il2CppYgomGame.Duel.DuelMenu>();
-                if (duelMenu != null)
-                {
-                    var targetPhase = currentPhase == Il2CppYgomGame.Duel.Engine.Phase.Battle
-                        ? Il2CppYgomGame.Duel.Engine.Phase.End
-                        : Il2CppYgomGame.Duel.Engine.Phase.Battle;
-
-                    DebugLogger.Log(LogCategory.Game, "FieldNav",
-                        $"Calling DuelMenu.ChangePhase({targetPhase})");
-                    duelMenu.ChangePhase(targetPhase);
-                    ScreenReader.Say(Loc.Get("duel_advancing_phase",
-                        DuelEventAnnouncer.GetPhaseName(targetPhase)));
-                    return;
-                }
-
-                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    "Neither EmotionalCommand nor DuelMenu found");
-                ScreenReader.Say(Loc.Get("duel_cant_advance_phase"));
+        private static bool OpenNativePhaseMenu(Il2CppYgomGame.Duel.EmotionalCommand em)
+        {
+            try
+            {
+                MelonLogger.Msg("[PhaseAdvance] opening native phase menu");
+                em.OnOpenPhase();
+                return true;
             }
             catch (Exception ex)
             {
-                DebugLogger.Log(LogCategory.Game, "FieldNav",
-                    $"AdvancePhaseDirect error: {ex.Message}");
+                MelonLogger.Warning($"[PhaseAdvance] open failed: {ex}");
                 ScreenReader.Say(Loc.Get("duel_phase_error"));
+                return false;
+            }
+        }
+
+        private static bool TryNativePhaseClick(out bool failed)
+        {
+            failed = false;
+            try
+            {
+                var phaseButtons = UnityEngine.Object.FindObjectsOfType<Il2CppYgomGame.Duel.PhaseButtonViewController>();
+                foreach (var phaseButton in phaseButtons)
+                {
+                    var button = phaseButton?.button;
+                    if (button == null || !button.gameObject.activeInHierarchy || !button.interactable) continue;
+                    var next = phaseButton.nextPhase;
+                    if (next != Il2CppYgomGame.Duel.Engine.Phase.Battle && next != Il2CppYgomGame.Duel.Engine.Phase.End) continue;
+                    MelonLogger.Msg($"[PhaseAdvance] dispatch PhaseButton.OnClickPhase next={next}");
+                    phaseButton.OnClickPhase();
+                    ScreenReader.Say(Loc.Get("duel_phase_requested", DuelEventAnnouncer.GetPhaseName(next)));
+                    return true;
+                }
+
+                var em = Il2CppYgomGame.Duel.EmotionalCommand.Instance;
+                if (em == null) return false;
+                var battle = em.dirBpButton;
+                var end = em.dirEpButton;
+                bool battleAvailable = battle != null && battle.gameObject.activeInHierarchy && battle.interactable;
+                bool endAvailable = end != null && end.gameObject.activeInHierarchy && end.interactable;
+                var target = PhaseAdvancePolicy.Choose(DuelState.CurrentPhase.ToString(), battleAvailable, endAvailable);
+                if (target == PhaseAdvanceTarget.None) return false;
+                var selected = target == PhaseAdvanceTarget.Battle ? battle : end;
+                var nextPhase = target == PhaseAdvanceTarget.Battle ? Il2CppYgomGame.Duel.Engine.Phase.Battle : Il2CppYgomGame.Duel.Engine.Phase.End;
+                MelonLogger.Msg($"[PhaseAdvance] dispatch native button next={nextPhase} bp={battleAvailable} ep={endAvailable}");
+                selected.onClick.Invoke();
+                ScreenReader.Say(Loc.Get("duel_phase_requested", DuelEventAnnouncer.GetPhaseName(nextPhase)));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                // A callback can throw after sending its request: never fall through
+                // to another dispatch. Always-on full exception preserves evidence.
+                failed = true;
+                MelonLogger.Warning($"[PhaseAdvance] native request exception; no retry: {ex}");
+                ScreenReader.Say(Loc.Get("duel_phase_request_uncertain"));
+                return false;
             }
         }
 

@@ -24,6 +24,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/PhaseAdvancePolicy.cs" Link="Source/PhaseAdvancePolicy.cs" />
+    <Compile Include="../../src/GateLevelPolicy.cs" Link="Source/GateLevelPolicy.cs" />
     <Compile Include="..\..\src\CardSelectionPolicy.cs" Link="Source\CardSelectionPolicy.cs" />
     <Compile Include="..\..\src\ExtraSummonPolicy.cs" Link="Source\ExtraSummonPolicy.cs" />
     <Compile Include="..\..\src\DuelPullDownPolicy.cs" Link="Source\DuelPullDownPolicy.cs" />
