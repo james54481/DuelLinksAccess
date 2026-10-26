@@ -39,7 +39,7 @@ dotnet build DuelLinksAccess.csproj -c Release -p:DuelLinksPath="你的遊戲安
 
 ## 貢獻資訊
 
-繁體中文維護、功能新增與錯誤修正：james54481。首次署名日期：2026-10-19；本次更新日期：2026-10-26。
+繁體中文維護、功能新增與錯誤修正：james54481。署名日期：2026-10-19。
 
 原始專案作者：Florian Beijers（zersiax）。原作者聲明與 MIT 授權予以保留。
 
