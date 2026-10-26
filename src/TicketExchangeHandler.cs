@@ -371,6 +371,18 @@ namespace DuelLinksAccess
             }
 
             // Enter — select/add current card
+            if (GetModeName() == "RespectOrb" && InputManager.TryConsumeKeyDown(KeyCode.Delete))
+            {
+                var clear = _vc?.clearButton;
+                if (TicketExchangePolicy.IsUsable(clear != null,
+                    clear?.gameObject?.activeInHierarchy == true, clear?.IsInteractable() == true))
+                {
+                    clear.onClick.Invoke();
+                    _confirmFocused = false;
+                    ScreenReader.Say(Loc.Get("ticket_selection_cleared"));
+                }
+                return;
+            }
             if (InputManager.TryConsumeKeyDown(KeyCode.Return)
                 || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter))
             {
@@ -489,7 +501,8 @@ namespace DuelLinksAccess
                     {
                         ScreenReader.Say(Loc.Get("ticket_selected", name));
                         MelonLoader.MelonLogger.Msg($"[TicketExchange] Selected mrk={mrk} kirarity={kirarity} name={name}");
-                        ScreenReader.SayQueued(Loc.Get("ticket_confirm_hint"));
+                        bool insufficient = AnnounceOrbCost(queued: true);
+                        if (!insufficient) ScreenReader.SayQueued(Loc.Get("ticket_confirm_hint"));
                         DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                             $"Selected card mrk={mrk} kirarity={kirarity} ({name})");
                     }
@@ -502,6 +515,7 @@ namespace DuelLinksAccess
                 {
                     MelonLoader.MelonLogger.Msg($"[TicketExchange] isAddible=false mrk={mrk} kirarity={kirarity} mode={GetModeName()}");
                     ScreenReader.Say(Loc.Get("ticket_activate_error"));
+                    AnnounceOrbCost(queued: true);
                 }
 
                 _operationCooldown = OperationCooldownTime;
@@ -566,7 +580,8 @@ namespace DuelLinksAccess
                             $"interactable={decideBtn?.interactable == true}) " +
                             $"exchange(present={exchangeBtn != null}, " +
                             $"interactable={exchangeBtn?.interactable == true})");
-                        ScreenReader.Say(Loc.Get("ticket_nothing_to_exchange"));
+                        if (!AnnounceOrbCost(queued: false))
+                            ScreenReader.SayQueued(Loc.Get("ticket_nothing_to_exchange"));
                         break;
                 }
 
@@ -584,6 +599,11 @@ namespace DuelLinksAccess
         {
             try
             {
+                if (GetModeName() == "RespectOrb")
+                {
+                    AnnounceOrbCost(queued: false);
+                    return;
+                }
                 // Try to read exchange info text
                 string info = _vc?.cardExchangeInfo;
                 if (!string.IsNullOrEmpty(info))
@@ -608,6 +628,131 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "TicketExchange",
                     $"AnnounceExchangeInfo error: {ex.Message}");
             }
+        }
+
+        // Read only: the native confirmation button remains the authority.
+        // Do not enable it or submit a transaction when cost exceeds balance.
+        private bool AnnounceOrbCost(bool queued)
+        {
+            if (_vc == null || GetModeName() != "RespectOrb") return false;
+            if (_vc.selList?.Count == 0)
+            {
+                string prompt;
+                try
+                {
+                    int id = _vc.needItemId > 0 ? _vc.needItemId : OrbExchangePolicy.RespectOrbItemId;
+                    long owned = Il2CppYgomGame.Utility.ItemUtil.GetNum(id);
+                    string name = Il2CppYgomGame.Utility.ItemUtil.GetName(id);
+                    if (owned < 0 || string.IsNullOrWhiteSpace(name))
+                        throw new InvalidOperationException("Orb balance unavailable");
+                    prompt = Loc.Get("ticket_orb_balance", name, owned);
+                    MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb balance itemId={id} owned={owned} selected=0");
+                }
+                catch (Exception ex)
+                {
+                    prompt = Loc.Get("ticket_orb_balance_unknown");
+                    MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb balance UNKNOWN: {ex.Message}");
+                }
+                if (queued) ScreenReader.SayQueued(prompt); else ScreenReader.Say(prompt);
+                return true;
+            }
+            string text;
+            bool insufficient = false;
+            try
+            {
+                string nativeText = ReadOrbRewardCostText();
+                int id = _vc.needItemId > 0 ? _vc.needItemId : _vc.itemId;
+                if (id <= 0) id = OrbExchangePolicy.RespectOrbItemId;
+                int cost;
+                long displayedOwned;
+                bool parsed = OrbExchangePolicy.TryReadCostText(nativeText, out cost, out displayedOwned);
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb raw itemId={_vc.itemId} needItemId={_vc.needItemId} currentCost={_vc.currentCost} costMax={_vc.costMax} costText={nativeText} parsed={parsed}");
+                // currentCost/itemId belong to other CardGetter modes and may
+                // be unset for RespectOrb. Prefer the visible native cost.
+                if (!parsed)
+                    throw new InvalidOperationException("Native orb cost text unavailable");
+                long owned = displayedOwned >= 0 ? displayedOwned
+                    : Il2CppYgomGame.Utility.ItemUtil.GetNum(id);
+                long shortfall = OrbExchangePolicy.Shortfall(cost, owned);
+                if (shortfall < 0) throw new InvalidOperationException("Orb balance unavailable");
+                string name = Il2CppYgomGame.Utility.ItemUtil.GetName(id);
+                if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("Orb name unavailable");
+                text = Loc.Get("ticket_orb_cost", cost, name, owned);
+                insufficient = shortfall > 0;
+                text += " " + (insufficient
+                    ? Loc.Get("ticket_orb_shortfall", shortfall)
+                    : Loc.Get("ticket_orb_clear_hint"));
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb cost itemId={id} required={cost} owned={owned} shortfall={shortfall} nativeText={_vc.costText?.text}");
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb cost UNKNOWN: {ex.Message}");
+                text = Loc.Get("ticket_orb_cost_unknown");
+            }
+            if (queued) ScreenReader.SayQueued(text); else ScreenReader.Say(text);
+            return insufficient;
+        }
+
+        private string ReadOrbRewardCostText()
+        {
+            // Trader modes render costs separately from the selected card.
+            // CardGetterItem.costText can be an inactive placeholder (test15).
+            var trade = _vc?.rewardItem;
+            if (trade?.gameObject?.activeInHierarchy == true)
+            {
+                string pair = null;
+                int count = 0;
+                foreach (var icon in trade.GetComponentsInChildren<Il2CppYgomGame.Single.CardTraderInfoItemIcon>(true))
+                {
+                    if (icon == null || !icon.gameObject.activeInHierarchy) continue;
+                    var use = icon.m_ItemUseNumText;
+                    var own = icon.m_ItemPossNumText;
+                    string required = LabelExtractor.StripRichText(use?.text)?.Trim().TrimEnd('/', '／');
+                    string possessed = LabelExtractor.StripRichText(own?.text)?.Trim().TrimStart('/', '／');
+                    MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb trader-row use={required} useActive={use?.gameObject?.activeInHierarchy} own={possessed} ownActive={own?.gameObject?.activeInHierarchy}");
+                    if (use?.gameObject?.activeInHierarchy != true || own?.gameObject?.activeInHierarchy != true) continue;
+                    string text = required + "/" + possessed;
+                    if (!OrbExchangePolicy.TryReadCostText(text, out _, out long balance) || balance < 0) continue;
+                    pair = text;
+                    count++;
+                }
+                if (count == 1) return pair;
+                if (count > 1) throw new InvalidOperationException("Multiple orb cost rows; cannot identify currency safely");
+                // Some builds render the ratio in a single native Text instead.
+                var pairs = new HashSet<string>();
+                foreach (var label in trade.GetComponentsInChildren<UnityEngine.UI.Text>(true))
+                {
+                    if (label == null || !label.gameObject.activeInHierarchy) continue;
+                    string text = LabelExtractor.StripRichText(label.text);
+                    MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb trader text {label.gameObject.name}={text}");
+                    if (OrbExchangePolicy.TryReadCostText(text, out _, out long balance) && balance >= 0)
+                        pairs.Add(text);
+                }
+                if (pairs.Count == 1) foreach (var pairText in pairs) return pairText;
+            }
+            // RespectOrb puts the fee on each selected CardGetterItem, not the
+            // page-level costText used by other modes. Never scan the choice
+            // grid: it contains cards the player has not selected.
+            var view = _vc?.rewardView;
+            if (view == null || !view.gameObject.activeInHierarchy)
+                throw new InvalidOperationException("Selected reward view unavailable");
+            string found = null;
+            int activeRows = 0;
+            foreach (var row in view.GetComponentsInChildren<CardGetterItem>(true))
+            {
+                if (row == null || !row.gameObject.activeInHierarchy || !row.IsCardActive()) continue;
+                activeRows++;
+                var label = row.costText;
+                string text = LabelExtractor.StripRichText(label?.text);
+                MelonLoader.MelonLogger.Msg($"[TicketExchange] Orb selected-row costText={text} active={label?.gameObject?.activeInHierarchy}");
+                if (label?.gameObject?.activeInHierarchy != true
+                    || !OrbExchangePolicy.TryReadCostText(text, out _, out _))
+                    throw new InvalidOperationException("Selected card cost text unavailable");
+                found = text;
+            }
+            if (activeRows != 1)
+                throw new InvalidOperationException($"Expected one selected orb card, got {activeRows}");
+            return found;
         }
 
         private void GoBack()

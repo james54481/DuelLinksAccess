@@ -17,7 +17,7 @@ using System.Collections;
 //   See docs/technical-reference.md section "CRITICAL: Accessing Game Code"
 // ============================================================================
 
-[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.3", "DuelLinksAccess Team")]
+[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.4", "DuelLinksAccess Team")]
 [assembly: MelonGame("Konami Digital Entertainment Co., Ltd.", "Yu-Gi-Oh! DUEL LINKS")]
 
 namespace DuelLinksAccess
@@ -999,7 +999,7 @@ namespace DuelLinksAccess
         /// (origin bottom-left, client-relative) to Windows screen coords.
         /// Returns false if the game window handle couldn't be found.
         /// </summary>
-        internal static bool ClickViaHardwareMouse(Vector2 unityPos, string reason)
+        internal static bool ClickViaHardwareMouse(Vector2 unityPos, string reason, bool requireForeground = false)
         {
             try
             {
@@ -1011,6 +1011,8 @@ namespace DuelLinksAccess
                 pt.X = clientX;
                 pt.Y = clientY;
                 var hwnd = FindWindow(null, "Yu-Gi-Oh! DUEL LINKS");
+                if (requireForeground && (hwnd == System.IntPtr.Zero || GetForegroundWindow() != hwnd))
+                    return false;
                 if (hwnd == System.IntPtr.Zero) hwnd = GetActiveWindow();
 
                 if (hwnd == System.IntPtr.Zero || !ClientToScreen(hwnd, ref pt))
@@ -1389,6 +1391,9 @@ namespace DuelLinksAccess
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern System.IntPtr GetActiveWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern System.IntPtr GetForegroundWindow();
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(System.IntPtr hWnd);

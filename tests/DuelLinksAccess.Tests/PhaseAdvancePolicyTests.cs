@@ -4,6 +4,19 @@ namespace DuelLinksAccess.Tests;
 public sealed class PhaseAdvancePolicyTests
 {
     [Theory]
+    [InlineData(true, false, 3, "Main1", true, false, true)]
+    [InlineData(false, false, 3, "Main1", true, false, false)]
+    [InlineData(true, true, 3, "Main1", true, false, false)]
+    [InlineData(true, false, 4, "Main1", true, false, false)]
+    [InlineData(true, false, 3, "Battle", true, false, false)]
+    [InlineData(true, false, 3, "Main1", false, false, false)]
+    [InlineData(true, false, 3, "Main1", true, true, false)]
+    public void MenuCancellationMustNotDispatchIntoChangedTurnPhaseOrSelection(
+        bool inDuel, bool ended, int turn, string phase, bool open, bool selecting, bool expected)
+        => Assert.Equal(expected, PhaseAdvancePolicy.CanContinueAfterMenuCancellation(
+            inDuel, ended, 3, turn, "Main1", phase, open, selecting));
+
+    [Theory]
     [InlineData("Main1", true, true, PhaseAdvanceTarget.Battle)]
     [InlineData("Main1", false, true, PhaseAdvanceTarget.End)]
     [InlineData("Main2", false, true, PhaseAdvanceTarget.End)]

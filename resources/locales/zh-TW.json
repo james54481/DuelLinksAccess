@@ -272,6 +272,7 @@
   "duel_card_stats": "攻擊力 {0}，守備力 {1}",
   "duel_card_original_stats": "原攻擊力 {0}，原守備力 {1}",
   "duel_available_actions": "可用操作：{0}",
+  "duel_actions_unknown": "尚未確認可用操作，請開啟卡片操作選單核對。",
   "duel_unknown_card": "未知卡片",
   "duel_card_read_error": "無法讀取卡片",
   "duel_field_summary": "手牌 {0} 張。你的場上有 {1} 隻怪獸、{2} 張魔法或陷阱。你的墓地 {3} 張。對手場上有 {4} 隻怪獸、{5} 張魔法或陷阱。對手墓地 {6} 張。",
@@ -535,5 +536,14 @@
   "gate_level_selected": "對手等級 {0}，已選取",
   "duel_phase_requested": "已請求切換至{0}，等待遊戲回應。",
   "duel_phase_unavailable": "目前無法切換階段，請先完成選擇或等待遊戲回應。",
-  "duel_phase_request_uncertain": "無法確認階段切換請求，請先確認目前階段再重試。"
+  "duel_phase_request_uncertain": "無法確認階段切換請求，請先確認目前階段再重試。",
+  "trader_owned_unknown": "目前持有量無法確認",
+  "duel_extra_browse": "我方額外牌組，共 {0} 張。左右鍵瀏覽，V 查看說明，Enter 尋找此卡的召喚選項，Escape 返回。",
+  "ticket_orb_cost": "需要 {0} 個{1}，目前持有 {2} 個。",
+  "ticket_orb_shortfall": "數量不足，還缺 {0} 個。按 Delete 清除已選卡片，再重新選擇。",
+  "ticket_orb_clear_hint": "按 Delete 清除已選卡片，再重新選擇。",
+  "ticket_orb_cost_unknown": "交換費用或持有量 UNKNOWN，請核對遊戲確認畫面。按 Delete 可清除已選卡片。",
+  "ticket_selection_cleared": "已清除選取，可以重新選擇卡片。",
+  "ticket_orb_balance": "目前持有 {1} 個{0}。",
+  "ticket_orb_balance_unknown": "無法讀取寶珠餘額，目前持有數量 UNKNOWN。"
 }

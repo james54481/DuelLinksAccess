@@ -29,6 +29,7 @@ namespace DuelLinksAccess
         /// </summary>
         internal static CardTraderInfoBase LastChangeCardItem { get; private set; }
         private int _focusIndex;
+        private GameObject _hiddenCardDetail;
 
         private float _operationCooldown;
         private const float OperationCooldownTime = 0.5f;
@@ -149,6 +150,7 @@ namespace DuelLinksAccess
 
         private void Deactivate()
         {
+            RestoreCardDetail();
             _wasActive = false;
             IsActive = false;
             _vc = null;
@@ -551,12 +553,65 @@ namespace DuelLinksAccess
 
         #region Item Operations
 
+        private static bool SameTradeOffer(CardTraderInfoBase a, CardTraderInfoBase b)
+            => a != null && b != null && a.itemId == b.itemId
+                && a.rareId == b.rareId && a.gId == b.gId
+                && (a.itemType == b.itemType || a.itemType == CardTraderInfoBase.Type.SoldOut
+                    || b.itemType == CardTraderInfoBase.Type.SoldOut);
+
+        // Resolve from the game's current inventory, never trust the initial scan
+        // after an exchange has changed stock. Do not use stock==0: some services
+        // use that value for unlimited inventory.
+        private CardTraderInfoBase LiveTradeOffer(CardTraderInfoBase expected)
+        {
+            if (_vc == null || expected == null) return null;
+            var items = _vc.itemInfoFilter;
+            if (items == null || items.Count == 0) items = _vc.itemInfoMaster;
+            if (items == null) return null;
+            foreach (var item in items)
+                if (SameTradeOffer(item, expected)) return item;
+            return null;
+        }
+
+        private TradeAvailability GetTradeAvailability(CardTraderInfoBase expected, bool checkMaterials)
+        {
+            try
+            {
+                var item = LiveTradeOffer(expected);
+                if (item == null) return TradeAvailability.Unavailable;
+                bool soldOut = item.itemType == CardTraderInfoBase.Type.SoldOut || item.soldout;
+                if (soldOut) return TradeAvailability.SoldOut;
+                bool unchangeable = item.unchangable;
+                // ChangeCard checks its cost-card possession in its existing picker
+                // flow; IsCardShort reads the reward rather than the cost there.
+                bool materials = !checkMaterials || item.itemType == CardTraderInfoBase.Type.ChangeCard
+                    || (!item.IsGoldShort() && !item.IsItemShort()
+                        && item.IsCardShort() != CardTraderInfoBase.CardShortage.Shortage);
+                return TradeExecutionPolicy.Availability(soldOut, unchangeable, materials);
+            }
+            catch (Exception ex)
+            {
+                MelonLoader.MelonLogger.Warning($"[TraderAvailability] state unavailable for {expected?.itemId}: {ex.Message}");
+                return TradeAvailability.Unavailable;
+            }
+        }
+
+        private bool BlockUnavailableTrade(CardTraderInfoBase item, bool checkMaterials)
+        {
+            var state = GetTradeAvailability(item, checkMaterials);
+            if (state == TradeAvailability.Available) return false;
+            MelonLoader.MelonLogger.Msg($"[TraderAvailability] blocked item={item?.itemId} state={state}");
+            ScreenReader.Say(Loc.Get(state == TradeAvailability.SoldOut ? "trader_sold_out" : "trader_cannot_trade"));
+            return true;
+        }
+
         private void SelectCurrentItem()
         {
             if (_operationCooldown > 0f || _vc == null || _items.Count == 0) return;
             if (_tradePollActive) return; // a selection is already resolving
 
             var item = _items[_focusIndex];
+            if (BlockUnavailableTrade(item, checkMaterials: false)) return;
             string name = GetItemName(item);
             var type = item.itemType;
 
@@ -662,6 +717,8 @@ namespace DuelLinksAccess
                     return;
                 }
 
+                if (BlockUnavailableTrade(item, checkMaterials: true)) return;
+
                 // Begin verifying the carousel actually settled on our item
                 // before opening the trade confirm.
                 _tradePollActive = true;
@@ -693,12 +750,14 @@ namespace DuelLinksAccess
 
             _tradePollTimer += Time.deltaTime;
 
+            if (BlockUnavailableTrade(_tradeIntendedItem, checkMaterials: true)) { CancelTradePoll(); return; }
             int curId = -1;
+            bool matches = false;
             string curName = "?";
             try
             {
                 var cur = _vc.getCurrentItem();
-                if (cur != null) { curId = cur.itemId; curName = GetItemName(cur); }
+                if (cur != null) { curId = cur.itemId; curName = GetItemName(cur); matches = SameTradeOffer(cur, _tradeIntendedItem); }
             }
             catch { }
 
@@ -710,7 +769,7 @@ namespace DuelLinksAccess
                     + $"currIdx={SafeCurrIdx()}, getCurrentItem={curId} ({curName})");
             }
 
-            if (curId == _tradeIntendedId)
+            if (matches)
             {
                 DebugLogger.Log(LogCategory.Handler, "CardTrader",
                     $"PollTrade matched after {_tradePollTimer:F2}s — opening confirm");
@@ -759,10 +818,17 @@ namespace DuelLinksAccess
         {
             try
             {
+                if (BlockUnavailableTrade(item, checkMaterials: true)) return;
+                var live = LiveTradeOffer(item);
+                if (!SameTradeOffer(_vc.getCurrentItem(), live))
+                {
+                    ScreenReader.Say(Loc.Get("trader_select_failed", name));
+                    return;
+                }
                 DebugLogger.Log(LogCategory.Handler, "CardTrader",
                     $"OpenTradeConfirm via OpenExchangeConfirmDialog: intended={item?.itemId} ({name})");
 
-                _vc.OpenExchangeConfirmDialog(item);
+                _vc.OpenExchangeConfirmDialog(live);
                 _postTradeVcCheckDelay = 1.0f;
             }
             catch (Exception ex)
@@ -880,6 +946,64 @@ namespace DuelLinksAccess
 
         #region Announcements
 
+        private void RestoreCardDetail()
+        {
+            if (_hiddenCardDetail != null)
+                _hiddenCardDetail.SetActive(true);
+            _hiddenCardDetail = null;
+        }
+
+        // james54481, 2026-10-22: SetCurrent moves the carousel but does not
+        // refresh its cost panel. Refresh through the native display method;
+        // browsing must never invoke a cell's action or an exchange callback.
+        private void SyncFocusedItemDisplay()
+        {
+            CancelTradePoll();
+            if (_vc == null || _focusIndex < 0 || _focusIndex >= _items.Count) return;
+            try
+            {
+                var intended = _items[_focusIndex];
+                var mgr = _vc.CardTrader2DMgr;
+                if (mgr == null) return;
+                // Restore only the detail object hidden by this handler. Native
+                // card selection can then rebuild it normally when returning.
+                RestoreCardDetail();
+                mgr.SetCurrent(_focusIndex);
+                if (!SameTradeOffer(_vc.getCurrentItem(), intended))
+                {
+                    DebugLogger.Log(LogCategory.Handler, "CardTrader", "Display sync skipped: selection mismatch");
+                    return;
+                }
+                _vc.SetInfoWindow();
+                // A service (including ChangeCard) is not a card preview.
+                // Keep its native costs and controls, hide only stale card art
+                // and description; never destroy the reusable detail object.
+                if (intended.itemType != CardTraderInfoBase.Type.Card)
+                {
+                    // PC keeps the visible left-hand panel in its own manager,
+                    // not CardTraderViewController2.cardDetail (mobile preview).
+                    GameObject detail = null;
+                    var managers = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                    if (managers != null && managers.TryGetValue("carddetail", out var details) && details != null)
+                    {
+                        var top = details.GetStackTopViewController();
+                        if (top != null && top.gameObject?.name == "CardDetail")
+                            detail = top.gameObject;
+                    }
+                    if (detail != null && detail.activeSelf)
+                    {
+                        detail.SetActive(false);
+                        _hiddenCardDetail = detail;
+                    }
+                }
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"Display synced: index={_focusIndex}, item={intended.itemId}");
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "CardTrader", $"Display sync failed: {ex.Message}");
+            }
+        }
+
         private void AnnounceCurrentItem(bool queued = false, bool verbose = false)
         {
             if (_items.Count == 0)
@@ -890,6 +1014,7 @@ namespace DuelLinksAccess
 
             if (_focusIndex < 0 || _focusIndex >= _items.Count) _focusIndex = 0;
 
+            SyncFocusedItemDisplay();
             var item = _items[_focusIndex];
             string label = FormatItem(item, verbose);
             string text = Loc.Get("ticket_card_position", _focusIndex + 1, _items.Count, label);
@@ -934,6 +1059,8 @@ namespace DuelLinksAccess
             if (IsRushCardItem(item))
                 parts.Add(Loc.Get("card_rush_tag"));
 
+            var availability = GetTradeAvailability(item, checkMaterials: true);
+
             // Affordability — drives the user's first decision when browsing.
             // ChangeCard items are the exception: you trade a card you own for
             // this one, so IsCardShort() always reports a shortage of the
@@ -941,7 +1068,11 @@ namespace DuelLinksAccess
             // ChangeCard read "cannot trade" even though the picker opens fine
             // (2026-08-02 log). The real gate is choosing an eligible card in
             // the sub-picker, so announce that instead of a bogus verdict.
-            if (item.itemType == CardTraderInfoBase.Type.ChangeCard)
+            if (availability != TradeAvailability.Available)
+            {
+                parts.Add(Loc.Get(availability == TradeAvailability.SoldOut ? "trader_sold_out" : "trader_cannot_trade"));
+            }
+            else if (item.itemType == CardTraderInfoBase.Type.ChangeCard)
             {
                 // A ChangeCard trade spends copies of the cost card (costCardMrk)
                 // you already OWN; the reward is one of destCards. The exchange
@@ -970,12 +1101,7 @@ namespace DuelLinksAccess
             }
             else
             {
-                bool goldShort = false, itemShort = false, cardShort = false;
-                try { goldShort = item.IsGoldShort(); } catch { }
-                try { itemShort = item.IsItemShort(); } catch { }
-                try { cardShort = item.IsCardShort() == CardTraderInfoBase.CardShortage.Shortage; } catch { }
-                bool canTrade = !goldShort && !itemShort && !cardShort;
-                parts.Add(canTrade ? Loc.Get("trader_can_trade") : Loc.Get("trader_cannot_trade"));
+                parts.Add(Loc.Get("trader_can_trade"));
             }
 
             // Gold cost
@@ -999,9 +1125,6 @@ namespace DuelLinksAccess
                 var ip = item.itemParam;
                 if (ip != null && ip.Length > 0)
                 {
-                    int itemPoss = 0;
-                    try { itemPoss = item.ItemPoss(); } catch { }
-
                     for (int i = 0; i < ip.Length; i++)
                     {
                         var entry = ip[i];
@@ -1015,7 +1138,12 @@ namespace DuelLinksAccess
                         if (string.IsNullOrWhiteSpace(itemName)) itemName = $"item {itemId}";
 
                         if (verbose)
-                            parts.Add(Loc.Get("trader_cost_item_poss", itemName, itemUse, itemPoss));
+                        {
+                            var owned = TradeExecutionPolicy.ReadOwnedItem(itemId, id => ItemUtil.GetNum(id));
+                            parts.Add(owned.HasValue
+                                ? Loc.Get("trader_cost_item_poss", itemName, itemUse, owned.Value)
+                                : Loc.Get("trader_cost_item", itemName, itemUse) + ", " + Loc.Get("trader_owned_unknown"));
+                        }
                         else
                             parts.Add(Loc.Get("trader_cost_item", itemName, itemUse));
                     }

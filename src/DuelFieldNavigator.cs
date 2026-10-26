@@ -233,6 +233,7 @@ namespace DuelLinksAccess
         // holds the popup reference so ExecuteSelectedCommand can fire
         // OnCommand directly instead of re-tapping (which would close it).
         private Il2CppYgomGame.Duel.CardCommand _pendingCardCom;
+        private int _pendingNativeUid;
 
         // Set by ReadPopupAndPresentCommands when the CardCommand popup never
         // yielded commands — lets the field flow fire its hollow-engine
@@ -351,6 +352,7 @@ namespace DuelLinksAccess
         /// <summary>Force-closes the action menu (e.g., when a dialog appears).</summary>
         public void CancelActionMenu()
         {
+            _pendingNativeUid = 0;
             _inActionMenu = false;
             _commands.Clear();
             _cmdIndex = 0;
@@ -362,6 +364,36 @@ namespace DuelLinksAccess
             {
                 try { _pendingCardCom.Close(); } catch { }
                 _pendingCardCom = null;
+            }
+        }
+
+        // james54481, 2026-10-24: an idle-response pointer click can open a
+        // CardCommand that was never assigned to _pendingCardCom. Cancel the
+        // actual visible native menu rather than only our navigation state.
+        private static bool NativeCardMenuVisible()
+        {
+            var menu = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d?.cardCom;
+            return menu != null && menu.IsDisp;
+        }
+
+        private bool CloseNativeCardMenu(string reason)
+        {
+            try
+            {
+                var menu = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d?.cardCom;
+                if (menu == null || !menu.IsDisp) return true;
+                MelonLogger.Msg($"[FieldNav] Closing native CardCommand reason={reason} tracked={_pendingCardCom != null} p={menu.cmdPlayer} locate={menu.cmdPosition} index={menu.cmdIndex}");
+                menu.Close();
+                _pendingCardCom = null;
+                _inActionMenu = false;
+                _commands.Clear();
+                _cmdIndex = 0;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[FieldNav] Native CardCommand close failed ({reason}): {ex}");
+                return false;
             }
         }
 
@@ -695,8 +727,13 @@ namespace DuelLinksAccess
             }
 
             // Escape: exit navigation mode
-            if (_isNavigating && InputManager.TryConsumeKeyDown(KeyCode.Escape))
+            if ((_isNavigating || NativeCardMenuVisible()) && InputManager.TryConsumeKeyDown(KeyCode.Escape))
             {
+                if (!CloseNativeCardMenu("Escape"))
+                {
+                    ScreenReader.Say(Loc.Get("duel_phase_request_uncertain"));
+                    return true;
+                }
                 _isNavigating = false;
                 ScreenReader.Say(Loc.Get("duel_nav_closed"));
                 return true;
@@ -837,6 +874,9 @@ namespace DuelLinksAccess
         /// <summary>Enters a side zone (hotkey-only, not in grid). Preserves grid position.</summary>
         private void EnterSideZone(Zone zone)
         {
+            // Browse the game's current list, not the registered deck's order.
+            // PvP stack locators may contain no CardRoot identities at all.
+            if (zone == Zone.MyExtra && TryOpenOwnExtraList()) return;
             _isNavigating = true;
             _inSideZone = true;
             _currentZone = zone;
@@ -1214,11 +1254,25 @@ namespace DuelLinksAccess
                     if (isMyCard)
                     {
                         uint cmdMask = SafeGetCommandMask(player, locate, slotIndex);
-                        if (cmdMask != 0)
+                        // PvP's engine mask is often empty: a matching visible
+                        // native menu is stronger evidence than that empty mask.
+                        var native = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d?.cardCom;
+                        var nativeLabels = new List<string>();
+                        if (isFieldCard && NativeMenuMatches(native, player, locate, slotIndex, card.UniqueId)
+                            && native.commands != null)
+                        {
+                            foreach (var button in native.commands)
+                                if (NativeCommandAvailable(button)) nativeLabels.Add(Loc.Get(CommandLocKey(button.cmd)));
+                        }
+                        if (nativeLabels.Count > 0)
+                            announcement += ". " + Loc.Get("duel_available_actions", string.Join(", ", nativeLabels));
+                        else if (cmdMask != 0)
                         {
                             string cmds = DescribeCommandMask(cmdMask);
                             announcement += ". " + Loc.Get("duel_available_actions", cmds);
                         }
+                        else if (isFieldCard && DuelState.IsEngineHollow)
+                            announcement += ". " + Loc.Get("duel_actions_unknown");
                     }
                 }
 
@@ -1310,6 +1364,97 @@ namespace DuelLinksAccess
         private bool _openingExtraPicker;
         private int _extraPickerGeneration;
 
+        private bool TryOpenOwnExtraList()
+        {
+            try
+            {
+                // Zone hotkeys also work during dialogs. Never replace a live
+                // material, target or effect choice with a browsing list.
+                var list = GetCurrentEmotionalList();
+                if (_inCardSelect || _awaitingTarget || _inActionMenu || _openingExtraPicker
+                    || list?.gameObject?.activeInHierarchy == true) return false;
+                var worker = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d;
+                if (worker == null) return false;
+                bool opened = worker.openViewList(DuelState.MyPlayerNum(), LocateExtra);
+                MelonLogger.Msg($"[ExtraBrowse] Native own-extra view requested opened={opened}");
+                MelonLogger.Msg($"[ExtraBrowse] viewActive={worker.viewList?.gameObject?.activeInHierarchy} " +
+                    $"viewClosing={worker.viewList?.isClosing} viewType={worker.viewList?.listType} " +
+                    $"selectionActive={worker.emoList?.gameObject?.activeInHierarchy}");
+                if (opened) _emotionalList.IsHandled = false;
+                return opened;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[ExtraBrowse] Native view unavailable: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool IsOwnExtraList(Il2CppYgomGame.Duel.EmotionalList list)
+            => list != null && list.listType == Il2CppYgomGame.Duel.EmotionalList.ListType.MyselfExtra;
+
+        // james54481, 2026-10-25: native browsing and effect/material picking
+        // use different EmotionalList objects. Instance alone misses viewList.
+        private static Il2CppYgomGame.Duel.EmotionalList GetCurrentEmotionalList()
+        {
+            var worker = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d;
+            var selection = worker?.emoList;
+            bool selectionActive = selection?.gameObject?.activeInHierarchy == true && !selection.isClosing;
+            var view = worker?.viewList;
+            if (ExtraBrowsePolicy.UseViewList(selectionActive,
+                view?.gameObject?.activeInHierarchy == true, view?.isClosing ?? true, IsOwnExtraList(view)))
+                return view;
+            return selectionActive ? selection : Il2CppYgomGame.Duel.EmotionalList.Instance;
+        }
+
+        private void RequestSummonFromExtraView()
+        {
+            var list = GetCurrentEmotionalList();
+            var worker = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d;
+            int index = ResolveItemIndex(list, _emotionalList.Index);
+            var items = list?.itemList;
+            if (items == null || index < 0 || index >= items.Count || items[index] == null) return;
+            var item = items[index];
+            int id = ExtraBrowsePolicy.CardId(IsOwnExtraList(list), item.cid, item.mixedId);
+            if (!ExtraBrowsePolicy.CanRequestSummon(list.gameObject.activeInHierarchy, list.isClosing,
+                IsOwnExtraList(list), item.uniqueId, id,
+                worker != null && worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase))
+            {
+                ScreenReader.Say(Loc.Get("duel_no_actions"));
+                return;
+            }
+            if (_openingExtraPicker) return;
+            // Capture only this live list's UID. Never reuse an ordinal after closing it.
+            int uid = item.uniqueId;
+            list.OnBack();
+            _emotionalList.IsActive = false;
+            _emotionalList.MarkHandled(UnityEngine.Time.unscaledTime, EmoListHandledTimeout);
+            _openingExtraPicker = true;
+            MelonCoroutines.Start(WaitForExtraViewClose(list, DuelState.MyPlayerNum(), uid, ++_extraPickerGeneration));
+        }
+
+        private IEnumerator WaitForExtraViewClose(Il2CppYgomGame.Duel.EmotionalList list,
+            int player, int uid, int generation)
+        {
+            try
+            {
+                float deadline = UnityEngine.Time.unscaledTime + 3f;
+                while (list != null && list.gameObject.activeInHierarchy
+                    && UnityEngine.Time.unscaledTime < deadline && generation == _extraPickerGeneration)
+                    yield return null;
+                if (generation != _extraPickerGeneration) yield break;
+                if (list != null && list.gameObject.activeInHierarchy)
+                {
+                    ScreenReader.Say(Loc.Get("duel_extra_choice_unavailable"));
+                    yield break;
+                }
+                // Independently match the UID against legal choices, then wait
+                // for a second Enter. Browsing never issues a summon by ordinal.
+                yield return OpenNativeExtraPicker(player, uid, generation);
+            }
+            finally { if (generation == _extraPickerGeneration) _openingExtraPicker = false; }
+        }
+
         private void SummonReadExtraCard(int player, int browseSlot)
         {
             if (_openingExtraPicker) return;
@@ -1353,7 +1498,7 @@ namespace DuelLinksAccess
                 while (UnityEngine.Time.unscaledTime < deadline && generation == _extraPickerGeneration)
                 {
                     yield return null;
-                    var list = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                    var list = GetCurrentEmotionalList();
                     if (list?.gameObject?.activeInHierarchy != true || list.isClosing
                         || list.listType != Il2CppYgomGame.Duel.EmotionalList.ListType.NoramlList
                         || list.selectMaxNum != 1 || (list.itemList?.Count ?? 0) == 0) continue;
@@ -1471,63 +1616,6 @@ namespace DuelLinksAccess
                         return;
                     }
 
-                    // PvP attack short-circuit: in PvP the engine's cmdMask
-                    // is always 0 even for valid attackers, but
-                    // DLL_DuelGetAttackTargetMask still returns the real
-                    // bitmask. Skip the popup-tap dance and go straight to
-                    // target selection. Only fires when the engine is hollow
-                    // — in single-player a cmdMask=0 on a monster genuinely
-                    // means "can't attack" (DEF position / already attacked)
-                    // and we must NOT inject Attack there.
-                    if (isLocalMonster && DuelState.IsEngineHollow)
-                    {
-                        // Face-down monsters can't attack, but the engine's
-                        // attackTargetMask is computed per zone, not per card
-                        // state — it stays nonzero (0x80) on a SET monster,
-                        // and injecting Attack hijacks Enter into a bogus
-                        // direct attack ("Proceed to the Battle Phase?"
-                        // prompt, flip summon never offered — 2026-07-18 PvP
-                        // log). Set monsters must fall through to the popup
-                        // route below, where the game's own Flip Summon
-                        // button lives.
-                        bool faceDown = false;
-                        try
-                        {
-                            var snap = DuelState.GetFieldCard(
-                                player, locate, slotIndex);
-                            faceDown = snap.HasValue && !snap.Value.IsFaceUp;
-                        }
-                        catch { }
-
-                        int atkMask = 0;
-                        if (!faceDown)
-                        {
-                            try
-                            {
-                                atkMask = Il2CppYgomGame.Duel.Engine
-                                    .DLL_DuelGetAttackTargetMask(player, locate);
-                            }
-                            catch { }
-                        }
-                        else
-                        {
-                            DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                "PvP attack injection skipped: card is face-down " +
-                                "— using popup route for Flip Summon");
-                        }
-
-                        if (atkMask != 0)
-                        {
-                            DebugLogger.Log(LogCategory.Game, "FieldNav",
-                                $"PvP attack: cmdMask=0 but attackTargetMask=0x{atkMask:X} — " +
-                                $"injecting Attack and entering target selection");
-                            ScreenReader.Say(Loc.Get("duel_cmd_attack"));
-                            BeginTargetSelection(player, locate, slotIndex,
-                                Il2CppYgomGame.Duel.Engine.CommandType.Attack);
-                            return;
-                        }
-                    }
-
                     // Own field zones: same popup-reading flow as hand. In PvP
                     // this is the only way to get the action menu (Activate /
                     // Change to defense / etc.); in single-player it also
@@ -1626,6 +1714,11 @@ namespace DuelLinksAccess
         /// </summary>
         private bool ProcessActionMenuInput()
         {
+            if (InputManager.TryConsumeKeyDown(KeyCode.P))
+            {
+                AdvancePhase();
+                return true;
+            }
             if (_commands.Count == 0)
             {
                 _inActionMenu = false;
@@ -1652,6 +1745,11 @@ namespace DuelLinksAccess
             }
             if (InputManager.IsKeyDown(KeyCode.Escape))
             {
+                if (!CloseNativeCardMenu("action menu Escape"))
+                {
+                    ScreenReader.Say(Loc.Get("duel_phase_request_uncertain"));
+                    return true;
+                }
                 CancelActionMenu();
                 ScreenReader.Say(Loc.Get("duel_nav_closed"));
                 return true;
@@ -1677,6 +1775,15 @@ namespace DuelLinksAccess
             int slotIndex = _zoneSlots[_navIndex];
             int player = GetZonePlayer(_currentZone);
             int locate = _zoneLocates[_navIndex];
+
+            if (_pendingCardCom != null && _pendingNativeUid > 0
+                && !NativeMenuMatches(_pendingCardCom, player, locate, slotIndex, _pendingNativeUid))
+            {
+                MelonLogger.Msg("[FieldNav] Native command aborted: menu/card identity changed");
+                CancelActionMenu();
+                ScreenReader.Say(Loc.Get("duel_actions_unknown"));
+                return;
+            }
 
             // Capture the PvP-popup ref before CancelActionMenu clears it.
             // We'll need it below to fire OnCommand directly.
@@ -2284,7 +2391,7 @@ namespace DuelLinksAccess
 
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null) return false;
 
                 bool goActive = false;
@@ -2430,7 +2537,9 @@ namespace DuelLinksAccess
             catch { }
 
             string prompt;
-            if (viewOnly)
+            if (IsOwnExtraList(emoList))
+                prompt = Loc.Get("duel_extra_browse", _emotionalList.Count);
+            else if (viewOnly)
                 prompt = Loc.Get("duel_emo_list_view", _emotionalList.Count);
             else if (selectMax > 1)
                 prompt = Loc.Get("duel_emo_list_multi", _emotionalList.Count, selectMax);
@@ -2448,7 +2557,7 @@ namespace DuelLinksAccess
             int selectMax = 0;
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null)
                 {
                     _emotionalList.IsActive = false;
@@ -2484,7 +2593,7 @@ namespace DuelLinksAccess
                     _emotionalList.Index = (_emotionalList.Index - 1 + _emotionalList.Count) % _emotionalList.Count;
                     // View-only / multi-select: scroll only (don't toggle).
                     // Single-select: SelectIndex moves highlight.
-                    if (selectMax > 1 || _emotionalList.ViewOnly)
+                    if (selectMax > 1 || _emotionalList.ViewOnly || IsOwnExtraList(GetCurrentEmotionalList()))
                         ScrollEmotionalList(_emotionalList.Index);
                     else
                         SelectEmotionalListCard(_emotionalList.Index);
@@ -2497,7 +2606,7 @@ namespace DuelLinksAccess
                 if (_emotionalList.Count > 0)
                 {
                     _emotionalList.Index = (_emotionalList.Index + 1) % _emotionalList.Count;
-                    if (selectMax > 1 || _emotionalList.ViewOnly)
+                    if (selectMax > 1 || _emotionalList.ViewOnly || IsOwnExtraList(GetCurrentEmotionalList()))
                         ScrollEmotionalList(_emotionalList.Index);
                     else
                         SelectEmotionalListCard(_emotionalList.Index);
@@ -2515,7 +2624,9 @@ namespace DuelLinksAccess
                 // physical selection uses. The game selects/orders it and either
                 // resolves (list closes → we exit) or waits for the next tap, so
                 // we keep the list open rather than closing it here.
-                if (_emotionalList.ViewOnly)
+                if (IsOwnExtraList(GetCurrentEmotionalList()))
+                    RequestSummonFromExtraView();
+                else if (_emotionalList.ViewOnly)
                     TapRevealCard();
                 else if (selectMax > 1)
                     ToggleEmotionalListCard();
@@ -2525,6 +2636,7 @@ namespace DuelLinksAccess
             }
             if (InputManager.TryConsumeKeyDown(KeyCode.Space))
             {
+                if (IsOwnExtraList(GetCurrentEmotionalList())) return true;
                 // Space = "done". For a reveal the decide button is inert and
                 // OnDecide no-ops (loops) — the game advances via Back/Cancel
                 // (verified 2026-08-17: Escape→OnCancel opened the reorder step,
@@ -2556,7 +2668,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 int dataIndex = ResolveItemIndex(emoList, index);
                 if (dataIndex >= 0) emoList.ScrollCardList(dataIndex, true);
             }
@@ -2571,7 +2683,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 int dataIndex = ResolveItemIndex(emoList, index);
                 if (dataIndex >= 0) emoList.SelectIndex(dataIndex, false);
             }
@@ -2588,7 +2700,7 @@ namespace DuelLinksAccess
 
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null) return;
 
                 int itemIdx = ResolveItemIndex(emoList, index);
@@ -2608,6 +2720,19 @@ namespace DuelLinksAccess
                 int cid = 0;
                 try { uid = item.uniqueId; } catch { }
                 try { cid = item.cid; } catch { }
+
+                // Native own-extra view is an authoritative DB-ID list. Do not
+                // let a hollow engine UID lookup override the displayed card.
+                if (IsOwnExtraList(emoList))
+                {
+                    int extraId = ExtraBrowsePolicy.CardId(true, cid, mixedId);
+                    string extraInfo = extraId > 0
+                        ? (verbose ? CardFormatter.FormatVerbose(extraId) : CardFormatter.FormatCompact(extraId))
+                        : Loc.Get("duel_unknown_card");
+                    MelonLogger.Msg($"[ExtraBrowse] Read visual={index} data={itemIdx} uid={uid} cid={extraId}");
+                    ScreenReader.Say(Loc.Get("duel_card_select_item", index + 1, _emotionalList.Count, extraInfo));
+                    return;
+                }
 
                 // Resolve card DB ID. Field cards (tribute material) store the
                 // runtime uniqueId in mixedId; hand/grave cards often store the
@@ -2646,6 +2771,7 @@ namespace DuelLinksAccess
                 }
                 if (cardDbId == 0 && cid > 0 && cid < 100000)
                     cardDbId = cid;
+                int trustedCardId = cardDbId;
                 // Last resort: mixedId as a direct card DB ID. Real cardDbIds
                 // are typically in the thousands; values < 1000 are almost
                 // certainly slot indices or uids the previous walk already
@@ -2660,6 +2786,8 @@ namespace DuelLinksAccess
                 // cheating (2026-07-21 log leaked opponent Set "Polymerization"
                 // / "Hallowed Life Barrier"). Hide opponent face-downs.
                 bool hidden = cardDbId > 0 && IsHiddenOpponentCard(uid, mixedId);
+                cardDbId = ResolveObservedListIdentity(emoList, index, uid, mixedId,
+                    cardDbId, trustedCardId, IsHiddenOpponentCard(uid, mixedId));
 
                 MelonLoader.MelonLogger.Msg(
                     $"[FieldNav] EmoCard[visual={index}, itemIdx={itemIdx}]: " +
@@ -2707,6 +2835,27 @@ namespace DuelLinksAccess
             }
             catch { }
             return null;
+        }
+
+        private static int ResolveObservedListIdentity(Il2CppYgomGame.Duel.EmotionalList list,
+            int visualIndex, int itemUid, int mixedId, int resolvedId, int trustedId, bool hidden)
+        {
+            try
+            {
+                int visualUid = list.cardList[visualIndex].UniqueID;
+                int uid = ObservedCardIdentityStore.MatchedUid(itemUid, visualUid, mixedId);
+                bool activationList = list.listType == Il2CppYgomGame.Duel.EmotionalList.ListType.Timing
+                    || list.listType == Il2CppYgomGame.Duel.EmotionalList.ListType.Chain;
+                // Only activation lists offer the local player's usable effects.
+                // A card back in an arbitrary targeting list must stay hidden.
+                DuelState.ObservedIdentities.Observe(uid, trustedId, activationList && !hidden);
+                if (resolvedId > 0) return resolvedId;
+                int recovered = DuelState.ObservedIdentities.Resolve(uid, activationList, hidden);
+                if (recovered > 0)
+                    MelonLogger.Msg($"[CardIdentity] Recovered activation-list card uid={uid} cid={recovered} type={list.listType}");
+                return recovered;
+            }
+            catch { return resolvedId; }
         }
 
         /// <summary>
@@ -2799,7 +2948,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null) return;
 
                 int itemIndex = ResolveItemIndex(emoList, _emotionalList.Index);
@@ -2832,7 +2981,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null)
                 {
                     _emotionalList.IsActive = false;
@@ -2879,7 +3028,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null)
                 {
                     _emotionalList.IsActive = false;
@@ -2936,7 +3085,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null)
                 {
                     ScreenReader.Say(Loc.Get("duel_action_error"));
@@ -3101,7 +3250,7 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
+                var emoList = GetCurrentEmotionalList();
                 if (emoList == null) return Loc.Get("duel_unknown_card");
 
                 int itemIdx = ResolveItemIndex(emoList, index);
@@ -3137,7 +3286,10 @@ namespace DuelLinksAccess
                     }
                 }
                 if (cardDbId == 0 && cid > 0 && cid < 100000) cardDbId = cid;
+                int trustedCardId = cardDbId;
                 if (cardDbId == 0 && mixedId >= 1000 && mixedId < 100000) cardDbId = mixedId;
+                cardDbId = ResolveObservedListIdentity(emoList, index, uid, mixedId,
+                    cardDbId, trustedCardId, IsHiddenOpponentCard(uid, mixedId));
 
                 if (cardDbId > 0)
                     return IsHiddenOpponentCard(uid, mixedId)
@@ -3152,8 +3304,13 @@ namespace DuelLinksAccess
         {
             try
             {
-                var emoList = Il2CppYgomGame.Duel.EmotionalList.Instance;
-                if (emoList != null && emoList.cancelable)
+                var emoList = GetCurrentEmotionalList();
+                if (IsOwnExtraList(emoList))
+                {
+                    emoList.OnBack();
+                    ScreenReader.Say(Loc.Get("duel_action_cancelled"));
+                }
+                else if (emoList != null && emoList.cancelable)
                 {
                     emoList.OnCancel();
                     ScreenReader.Say(Loc.Get("duel_action_cancelled"));
@@ -3798,6 +3955,9 @@ namespace DuelLinksAccess
             int slotIndex = _zoneSlots[_navIndex];
             int player = GetZonePlayer(_currentZone);
             int locate = _zoneLocates[_navIndex];
+            var requestedZone = _currentZone;
+            int requestedIndex = _navIndex;
+            var requestedCard = DuelState.GetFieldCard(player, locate, slotIndex);
 
             // Extra Deck: OnTapLocator(player, 14, slot) doesn't produce a
             // CardCommand popup (same family as TurnAtk/TurnDef/Reverse). Skip
@@ -3814,12 +3974,113 @@ namespace DuelLinksAccess
             // effect, phase change) silently no-ops.
             yield return WaitForInputOpen(client);
 
+            // A previous pointer/idle response may already have opened this
+            // exact card. Read it without tapping again (which can close it).
+            if (requestedCard.HasValue && NativeMenuMatches(client.worker2d?.cardCom,
+                player, locate, slotIndex, requestedCard.Value.UniqueId))
+            {
+                yield return ReadPopupAndPresentCommands(false, player, locate, slotIndex, requestedCard.Value.UniqueId);
+                if (!_popupReadFailed) yield break;
+            }
+            else if (NativeCardMenuVisible())
+            {
+                if (!CloseNativeCardMenu("switch to selected field card")) yield break;
+                yield return null;
+            }
+
+            var currentCard = DuelState.GetFieldCard(player, locate, slotIndex);
+            if (_currentZone != requestedZone || _navIndex != requestedIndex
+                || !requestedCard.HasValue || !currentCard.HasValue
+                || requestedCard.Value.UniqueId != currentCard.Value.UniqueId)
+            {
+                MelonLogger.Msg("[FieldNav] Field menu request aborted: selection/card changed while waiting");
+                ScreenReader.Say(Loc.Get("duel_actions_unknown"));
+                yield break;
+            }
+
             TapFieldCard(client, player, locate, slotIndex);
-            yield return ReadPopupAndPresentCommands(announceFailure: false);
+            yield return ReadPopupAndPresentCommands(false, player, locate, slotIndex, requestedCard?.UniqueId ?? 0);
 
             if (!_popupReadFailed)
                 yield break;
 
+            // james54481, 2026-10-23: the direct locator tap may not open
+            // the native popup in hollow-engine duels. Replay an ordinary
+            // same-card press/release, without inventing commands or changing
+            // the worker's selection flags. Revalidate after yielding.
+            if (_currentZone == Zone.MyMonster && DuelState.IsEngineHollow)
+            {
+                var before = DuelState.GetFieldCard(player, locate, slotIndex);
+                var worker = client.worker2d;
+                bool open = worker != null && (worker.curInputType
+                    == Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase
+                    || worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase);
+                if (before.HasValue && AttackFallbackPolicy.CanRetryFieldTap(
+                    player == DuelState.MyPlayerNum(), open, requestedCard.Value.CardDbId,
+                    before.Value.CardDbId, requestedCard.Value.UniqueId, before.Value.UniqueId))
+                {
+                    MelonLogger.Msg($"[FieldNav] Native field press: p={player} locate={locate} uid={before.Value.UniqueId}");
+                    worker.OnTapDownField(player, locate, slotIndex);
+                    yield return null;
+                    var after = DuelState.GetFieldCard(player, locate, slotIndex);
+                    open = worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase
+                        || worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase;
+                    if (after.HasValue && AttackFallbackPolicy.CanRetryFieldTap(
+                        _currentZone == Zone.MyMonster && player == DuelState.MyPlayerNum(), open,
+                        before.Value.CardDbId, after.Value.CardDbId,
+                        before.Value.UniqueId, after.Value.UniqueId))
+                    {
+                        worker.OnTapUpField(player, locate, slotIndex);
+                        yield return ReadPopupAndPresentCommands(false, player, locate, slotIndex, requestedCard?.UniqueId ?? 0);
+                        if (!_popupReadFailed) yield break;
+                    }
+                    else
+                    {
+                        MelonLogger.Msg("[FieldNav] Native field release aborted: identity or input changed");
+                        ScreenReader.Say(Loc.Get("duel_no_actions"));
+                        yield break;
+                    }
+                }
+            }
+
+            // james54481, 2026-10-24: the successful trace used a real pointer
+            // raycast before CardCommand.Open. Retry once at the selected card,
+            // only if identity, visibility, foreground and raycast all agree.
+            if (requestedZone == Zone.MyMonster && _currentZone == requestedZone
+                && _navIndex == requestedIndex && DuelState.IsEngineHollow)
+            {
+                // Like the hand UI, native field input can require one tap to
+                // select and a second to open. Revalidate before each tap.
+                for (int tap = 0; requestedCard.HasValue && tap < 2; tap++)
+                {
+                    if (_currentZone != requestedZone || _navIndex != requestedIndex
+                        || !DuelState.TryClickFieldCard(player, locate, slotIndex, requestedCard.Value)) break;
+                    yield return ReadPopupAndPresentCommands(false, player, locate, slotIndex, requestedCard.Value.UniqueId);
+                    if (!_popupReadFailed) yield break;
+                }
+            }
+
+            // james54481, 2026-10-23: native commands take precedence. A
+            // target mask alone is not permission to attack (it remains set
+            // in Main Phase and on defense-position monsters).
+            if (_currentZone == Zone.MyMonster && DuelState.IsEngineHollow)
+            {
+                var snap = DuelState.GetFieldCard(player, locate, slotIndex);
+                bool battle = client.worker2d != null && client.worker2d.curInputType
+                    == Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase;
+                int mask = 0;
+                try { mask = Il2CppYgomGame.Duel.Engine.DLL_DuelGetAttackTargetMask(player, locate); }
+                catch { }
+                if (AttackFallbackPolicy.CanOfferAttack(battle, snap?.IsFaceUp,
+                    snap?.IsAttack, mask))
+                {
+                    DebugLogger.Log(LogCategory.Game, "FieldNav", "Native popup unavailable; using verified battle attack fallback");
+                    ScreenReader.Say(Loc.Get("duel_cmd_attack"));
+                    BeginTargetSelection(player, locate, slotIndex,
+                        Il2CppYgomGame.Duel.Engine.CommandType.Attack);
+                    yield break;
+                }
+            }
             // Hollow-engine duels (2026-07-16 Wave Scramble log): OnTapLocator
             // is engine-addressed and no-ops when the engine has no card data
             // — the popup never opens for the player's own set spell/trap.
@@ -3889,7 +4150,8 @@ namespace DuelLinksAccess
         /// ArmLocalSeatCapture before the final OnCommand so the seat is
         /// captured from the resulting Cutin event.
         /// </summary>
-        private IEnumerator ReadPopupAndPresentCommands(bool announceFailure = true)
+        private IEnumerator ReadPopupAndPresentCommands(bool announceFailure = true,
+            int expectedPlayer = -1, int expectedLocate = -1, int expectedIndex = -1, int expectedUid = 0)
         {
             _popupReadFailed = false;
             var client = Il2CppYgomGame.Duel.DuelClient.instance;
@@ -3908,6 +4170,12 @@ namespace DuelLinksAccess
                     cardCom = null;
                     continue;
                 }
+                if (expectedPlayer >= 0 && !NativeMenuMatches(cardCom,
+                    expectedPlayer, expectedLocate, expectedIndex, expectedUid))
+                {
+                    cardCom = null;
+                    continue;
+                }
 
                 var probe = cardCom.commands;
                 if (probe == null) continue;
@@ -3916,7 +4184,7 @@ namespace DuelLinksAccess
                 for (int i = 0; i < probe.Length; i++)
                 {
                     var b = probe[i];
-                    if (b != null && b.gameObject != null && b.gameObject.activeSelf)
+                    if (NativeCommandAvailable(b))
                     {
                         anyActive = true;
                         break;
@@ -3976,7 +4244,7 @@ namespace DuelLinksAccess
             for (int i = 0; i < buttons.Length; i++)
             {
                 var btn = buttons[i];
-                if (btn == null || btn.gameObject == null || !btn.gameObject.activeSelf)
+                if (!NativeCommandAvailable(btn))
                     continue;
                 _commands.Add(new CommandInfo
                 {
@@ -3998,8 +4266,9 @@ namespace DuelLinksAccess
             }
 
             _pendingCardCom = cardCom;
+            _pendingNativeUid = expectedPlayer >= 0 ? expectedUid : 0;
 
-            if (_commands.Count == 1 && !NeedsTarget(_commands[0].Type))
+            if (expectedPlayer < 0 && _commands.Count == 1 && !NeedsTarget(_commands[0].Type))
             {
                 // Single command: auto-execute via OnCommand
                 var btn = FindCardComButton(cardCom, _commands[0].Type);
@@ -4022,6 +4291,23 @@ namespace DuelLinksAccess
         }
 
         /// <summary>Finds the active CardCommand button matching the given command type.</summary>
+        private static bool NativeMenuMatches(Il2CppYgomGame.Duel.CardCommand menu,
+            int player, int locate, int index, int uid)
+        {
+            if (menu == null || !menu.IsDisp || menu.myGameObject == null
+                || !menu.myGameObject.activeInHierarchy) return false;
+            var current = DuelState.GetFieldCard(player, locate, index);
+            return current.HasValue && AttackFallbackPolicy.MatchesNativeMenu(player, locate, index, uid,
+                menu.cmdPlayer, menu.cmdPosition, menu.cmdIndex, current.Value.UniqueId);
+        }
+
+        private static bool NativeCommandAvailable(Il2CppYgomGame.Duel.DuelCommandButton button)
+        {
+            if (button == null || button.gameObject == null || !button.gameObject.activeInHierarchy) return false;
+            var selectable = button.gameObject.GetComponent<UnityEngine.UI.Selectable>();
+            return selectable == null || selectable.IsInteractable();
+        }
+
         private static Il2CppYgomGame.Duel.DuelCommandButton FindCardComButton(
             Il2CppYgomGame.Duel.CardCommand cardCom,
             Il2CppYgomGame.Duel.Engine.CommandType cmd)
@@ -4032,7 +4318,7 @@ namespace DuelLinksAccess
             for (int i = 0; i < buttons.Length; i++)
             {
                 var btn = buttons[i];
-                if (btn == null || btn.gameObject == null || !btn.gameObject.activeSelf)
+                if (!NativeCommandAvailable(btn))
                     continue;
                 if (btn.cmd == cmd) return btn;
             }
@@ -4507,6 +4793,7 @@ namespace DuelLinksAccess
             {
                 if (!DuelState.InDuel || DuelState.DuelEnded) yield break;
                 int turn = DuelState.TurnNumber;
+                string requestedPhase = DuelState.CurrentPhase.ToString();
                 var client = Il2CppYgomGame.Duel.DuelClient.instance;
                 var worker = client?.worker2d;
                 if (worker == null || (worker.curInputType != Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase
@@ -4515,6 +4802,51 @@ namespace DuelLinksAccess
                     MelonLogger.Msg($"[PhaseAdvance] blocked input={worker?.curInputType.ToString() ?? "missing"}");
                     ScreenReader.Say(Loc.Get("duel_phase_unavailable"));
                     yield break;
+                }
+
+                // Close only CardCommand, never a tribute/material/effect list.
+                // Wait for native controls to recover; dispatch no phase action
+                // if the duel/turn/input changes while cancellation is pending.
+                if (_inCardSelect || _awaitingTarget || _emotionalList.IsActive
+                    || Il2CppYgomGame.Duel.DuelClient.IsOpenSelectCardLocation() || worker.IsListOpen())
+                {
+                    MelonLogger.Msg("[PhaseAdvance] blocked by native selection/list or target mode");
+                    ScreenReader.Say(Loc.Get("duel_phase_unavailable"));
+                    yield break;
+                }
+                if (NativeCardMenuVisible())
+                {
+                    if (!CloseNativeCardMenu("P before phase request"))
+                    {
+                        ScreenReader.Say(Loc.Get("duel_phase_request_uncertain"));
+                        yield break;
+                    }
+                    for (int i = 0; i < 12; i++)
+                    {
+                        yield return new WaitForSecondsRealtime(0.05f);
+                        bool stillSameInput = worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase
+                            || worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase;
+                        if (!PhaseAdvancePolicy.CanContinueAfterMenuCancellation(
+                            DuelState.InDuel, DuelState.DuelEnded, turn, DuelState.TurnNumber,
+                            requestedPhase, DuelState.CurrentPhase.ToString(), stillSameInput,
+                            Il2CppYgomGame.Duel.DuelClient.IsOpenSelectCardLocation() || worker.IsListOpen()))
+                        {
+                            MelonLogger.Msg("[PhaseAdvance] state changed during native menu cancellation; no phase dispatch");
+                            ScreenReader.Say(Loc.Get("duel_phase_unavailable"));
+                            yield break;
+                        }
+                        var phaseMenu = Il2CppYgomGame.Duel.EmotionalCommand.Instance;
+                        if (!NativeCardMenuVisible() && phaseMenu?.dirPhaseButton != null
+                            && phaseMenu.dirPhaseButton.gameObject.activeInHierarchy
+                            && phaseMenu.dirPhaseButton.interactable) break;
+                    }
+                    if (NativeCardMenuVisible())
+                    {
+                        MelonLogger.Msg("[PhaseAdvance] native CardCommand still visible after cancellation; no phase dispatch");
+                        ScreenReader.Say(Loc.Get("duel_phase_unavailable"));
+                        yield break;
+                    }
+                    MelonLogger.Msg("[PhaseAdvance] native CardCommand dismissed; rechecking phase controls");
                 }
 
                 bool failed;

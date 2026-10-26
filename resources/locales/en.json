@@ -272,6 +272,7 @@
   "duel_card_stats": "ATK {0}, DEF {1}",
   "duel_card_original_stats": "Original ATK {0}, DEF {1}",
   "duel_available_actions": "Actions: {0}",
+  "duel_actions_unknown": "Available actions could not be confirmed. Open the card's action menu to check.",
   "duel_unknown_card": "Unknown card",
   "duel_card_read_error": "Could not read card",
   "duel_field_summary": "Hand {0}. Your field: {1} monsters, {2} spells. Your grave {3}. Opponent: {4} monsters, {5} spells. Opponent grave {6}.",
@@ -535,5 +536,14 @@
   "gate_level_selected": "Opponent level {0}, selected",
   "duel_phase_requested": "Requested {0}. Waiting for the game.",
   "duel_phase_unavailable": "Phase change is unavailable. Finish the current selection or wait for the game.",
-  "duel_phase_request_uncertain": "Unable to confirm the phase request. Check the current phase before retrying."
+  "duel_phase_request_uncertain": "Unable to confirm the phase request. Check the current phase before retrying.",
+  "trader_owned_unknown": "Owned quantity unavailable",
+  "duel_extra_browse": "Your Extra Deck, {0} cards. Left and right to browse, V for details, Enter to find this card in the summon choices, Escape to return.",
+  "ticket_orb_cost": "Requires {0} {1}; you own {2}.",
+  "ticket_orb_shortfall": "Insufficient balance; {0} more needed. Press Delete to clear the selected card and choose again.",
+  "ticket_orb_clear_hint": "Press Delete to clear the selected card and choose again.",
+  "ticket_orb_cost_unknown": "Exchange cost or balance is UNKNOWN. Check the game confirmation. Press Delete to clear the selected card.",
+  "ticket_selection_cleared": "Selection cleared. You can choose another card.",
+  "ticket_orb_balance": "You own {1} {0}.",
+  "ticket_orb_balance_unknown": "Unable to read your orb balance. Remaining quantity is UNKNOWN."
 }

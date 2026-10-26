@@ -199,6 +199,8 @@ namespace DuelLinksAccess
                 _items.Clear();
                 _screenRoot = null;
                 _resultRescanTimer = -1f;
+                _resultSpeech.Reset();
+                _resultPollAt = 0f;
                 _tabRescanDelay = -1f;
             }
 
@@ -266,8 +268,8 @@ namespace DuelLinksAccess
             if (_noticeReadDelay >= 0f && !IsNoticePage()) _noticeReadDelay = -1f;
 
             // In text mode, poll for text changes to auto-read new dialogue
-            if (_textMode)
-                PollTextChanges();
+            if (IsResultPage) PollResultPage();
+            else if (_textMode) PollTextChanges();
 
             // Delayed rescan for result screens (after NEXT button animations)
             if (_resultRescanTimer > 0f)
@@ -511,7 +513,8 @@ namespace DuelLinksAccess
                 bool suppressLineupAnnounce = IsAsyncLineupScreen()
                     && HasOnlyTrivialItems() && _scanAttempts < 12;
 
-                if (_items.Count > 0 && !isResultScreen && !suppressLineupAnnounce)
+                if (isResultScreen) { _textMode = false; return; }
+                if (_items.Count > 0 && !suppressLineupAnnounce)
                 {
                     // Result screens handle their own announcement in ScanResultScreen
                     ScreenReader.SayQueued(
@@ -697,106 +700,105 @@ namespace DuelLinksAccess
         /// and creates structured items with NEXT/OK/END buttons for navigation.
         /// The level-up rewards scrollable list is excluded (just "Lvl: N" milestone markers).
         /// </summary>
+        private bool IsResultPage => _screenRoot != null
+            && (_screenRoot.name == "ResultBasePage" || _screenRoot.name == "ReplayResult");
+
+        private string ReadResultPageText(GameObject root)
+        {
+            var rewards = ReadResultRewards(root);
+            var values = new List<string>();
+            bool insertedRewards = false;
+            foreach (var text in root.GetComponentsInChildren<Text>(true))
+            {
+                if (text == null || !text.gameObject.activeInHierarchy) continue;
+                if (HasNamedRewardAncestor(text.transform, root.transform, rewards)) continue;
+                string value = LabelExtractor.StripRichText(text.text);
+                if (string.IsNullOrWhiteSpace(value) || value.StartsWith("\u3042\u3042\u3042")) continue;
+                values.Add(value);
+                if (!insertedRewards && (value.Trim() == "評分獎勵" || value.Trim().ToUpperInvariant() == "REWARDS"))
+                {
+                    values.AddRange(rewards.Labels);
+                    insertedRewards = true;
+                }
+            }
+            if (!insertedRewards) values.AddRange(rewards.Labels);
+            // The future level-up reward strip is not this duel's loot.
+            // Preserve every numeric Text (including repeated score/quantity values).
+            return ResultPagePolicy.Compose(values);
+        }
+
+        private static ResultRewardCatalog ReadResultRewards(GameObject root)
+        {
+            var catalog = new ResultRewardCatalog();
+            foreach (var node in root.GetComponentsInChildren<Il2CppYgomSystem.Htjson.HtjsonNode>(true))
+            {
+                if (node == null || !node.gameObject.activeInHierarchy) continue;
+                try
+                {
+                    var data = node.replaceParam;
+                    if (data == null || !data.TryGetValue("%boxpath%", out var path)
+                        || !data.TryGetValue("%itemtype%", out var type)
+                        || !data.TryGetValue("%itemid%", out var id)
+                        || !data.TryGetValue("%itemnum%", out var count)
+                        || !int.TryParse(id?.ToString(), out int iid)
+                        || !int.TryParse(count?.ToString(), out int quantity)) continue;
+                    catalog.Add(path?.ToString(), type?.ToString(), iid, quantity,
+                        itemId => Il2CppYgomGame.Utility.ItemUtil.GetName(itemId), Loc.Get("shop_unknown_item"));
+                }
+                catch { /* Keep the native quantity text when row data is unavailable. */ }
+            }
+            return catalog;
+        }
+
+        private static bool HasNamedRewardAncestor(Transform current, Transform root, ResultRewardCatalog rewards)
+        {
+            for (; current != null; current = current.parent)
+            {
+                var node = current.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>();
+                var data = node?.replaceParam;
+                if (data != null && data.TryGetValue("%boxpath%", out var path)
+                    && rewards.Contains(path?.ToString())) return true;
+                if (current == root) break;
+            }
+            return false;
+        }
+
         private void ScanResultScreen(GameObject root)
         {
+            _textMode = false;
             _items.Clear();
+            try { FindResultButtons(root, root.GetComponentsInChildren<Text>(true)); }
+            catch (Exception ex)
+            {
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn", $"Result button scan error: {ex}");
+            }
+        }
 
+        private float _resultPollAt;
+        private readonly ResultPageAnnouncement _resultSpeech = new();
+        private void PollResultPage()
+        {
+            if (Time.unscaledTime < _resultPollAt || GameStateTracker.CurrentScreen == GameScreen.Dialog) return;
+            _resultPollAt = Time.unscaledTime + 0.25f;
             try
             {
-                var texts = root.GetComponentsInChildren<Text>(true);
-                if (texts == null) return;
-
-                // Collect meaningful text, filtering out level-up milestone spam
-                var textParts = new List<string>();
-                bool inLevelUpSection = false;
-
-                foreach (var text in texts)
-                {
-                    if (text == null || text.gameObject == null) continue;
-                    if (!text.gameObject.activeInHierarchy) continue;
-                    string val = LabelExtractor.StripRichText(text.text);
-                    if (string.IsNullOrWhiteSpace(val)) continue;
-
-                    // Skip placeholder text
-                    if (val.StartsWith("\u3042\u3042\u3042")) continue;
-                    if (val == "0" && text.gameObject.name == "CardNum") continue;
-
-                    // Detect level-up rewards section boundary
-                    if (val == "Character Level-Up Rewards")
-                        inLevelUpSection = true;
-
-                    // Skip level-up milestone entries: "Lvl: N", "Next" marker,
-                    // and standalone numbers (EXP thresholds like 10, 15, 25...)
-                    if (inLevelUpSection)
-                    {
-                        if (val.StartsWith("Lvl:")) continue;
-                        if (val == "Next") continue;
-                        if (val.All(char.IsDigit)) continue;
-
-                        // End the section on known page 2 headers or button text
-                        if (val == "[Duel Assessment]" || val == "NEXT"
-                            || val == "SCORE" || val == "REWARDS")
-                            inLevelUpSection = false;
-                        else
-                            continue; // Still in the section, skip
-                    }
-
-                    // Skip button labels (handled separately below). Match the
-                    // same case-insensitive set used by FindResultButtons.
-                    string valUpper = val.ToUpperInvariant();
-                    if (valUpper == "NEXT" || valUpper == "OK" || valUpper == "END"
-                        || valUpper == "WATCH AGAIN" || valUpper == "RATE")
-                        continue;
-
-                    // Skip duplicate numbers that are just reward quantities
-                    // (stray "1", "10" from reward item counts)
-                    if (val.All(char.IsDigit) && val.Length <= 2
-                        && textParts.Count > 0)
-                    {
-                        // Keep only the first few numbers (level, EXP)
-                        string lastPart = textParts[textParts.Count - 1];
-                        if (lastPart == "SCORE" || lastPart == "REWARDS")
-                        {
-                            // These are meaningful: score value, reward count
-                            textParts.Add(val);
-                            continue;
-                        }
-                        // Skip stray small numbers in reward sections
-                        if (textParts.Contains("REWARDS")) continue;
-                    }
-
-                    textParts.Add(val);
-                }
-
-                // Build and read duel stats from Args if available
-                string argsSummary = ReadResultArgs();
-                if (!string.IsNullOrEmpty(argsSummary))
-                    textParts.Insert(0, argsSummary);
-
-                string summary = string.Join(". ", textParts);
-                if (!string.IsNullOrEmpty(summary))
-                {
-                    DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                        $"Result screen text: {summary}");
-                }
-
-                // Find the actionable buttons (NEXT, OK, END, WATCH AGAIN, Rate)
-                FindResultButtons(root, texts);
-
-                // Announce the summary text directly, then let user navigate to buttons
-                if (!string.IsNullOrEmpty(summary))
-                {
-                    if (_items.Count > 0)
-                        ScreenReader.Say(summary + ". " +
-                            Loc.Get("screen_buttons", _items.Count));
-                    else
-                        ScreenReader.Say(summary);
-                }
+                string text = ReadResultPageText(_screenRoot);
+                // NEXT may activate after the score finishes animating without
+                // changing any body text. Keep its availability in the signature.
+                ScanResultScreen(_screenRoot);
+                string signature = text + "|buttons:" + string.Join("|", _items.Select(i => i.Label));
+                if (!_resultSpeech.Observe(signature, Time.unscaledTime) || string.IsNullOrEmpty(text)) return;
+                _focusIndex = 0;
+                _lastReadText = text;
+                ScreenReader.Say(text);
+                if (_items.Count > 0)
+                    ScreenReader.SayQueued(Loc.Get("screen_buttons", _items.Count) + ". " + _items[0].Label);
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn", $"Result page stable: {text}; buttons={_items.Count}");
             }
             catch (Exception ex)
             {
-                DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
-                    $"Result screen scan error: {ex.Message}");
+                DebugLogger.Log(LogCategory.Handler, "ScreenBtn", $"Result page read error: {ex.Message}");
+                _resultPollAt = Time.unscaledTime + 5f;
             }
         }
 
@@ -817,16 +819,12 @@ namespace DuelLinksAccess
                 // case) on the post-duel Character Level page; older versions
                 // used "NEXT" (all caps) and the exact match missed v10.7.0's
                 // button text, leaving the screen stuck in text mode.
-                string upper = val.ToUpperInvariant();
-                if (upper != "NEXT" && upper != "OK" && upper != "END"
-                    && upper != "WATCH AGAIN" && upper != "RATE") continue;
+                if (!ResultPagePolicy.IsAdvance(val)) continue;
 
                 // Find the parent button GO (Label → btn)
-                var btnGo = text.transform.parent?.gameObject;
-                if (btnGo == null) continue;
-
-                var selectable = btnGo.GetComponent<Selectable>();
-                if (selectable == null) continue;
+                var selectable = text.GetComponentInParent<Selectable>();
+                if (selectable == null || !selectable.IsActive() || !selectable.IsInteractable()) continue;
+                var btnGo = selectable.gameObject;
 
                 // Avoid duplicates
                 if (_items.Any(i => i.Go == btnGo)) continue;

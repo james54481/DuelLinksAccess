@@ -48,3 +48,6 @@ nul
 /docs/SUMMON-DIALOG-FIX-*.zh-TW.md
 /docs/TICKET-EXTRA-FIX-*.zh-TW.md
 /docs/UI-ACCESSIBILITY-FIXES-*.zh-TW.md
+
+# Local diagnostic diary (not release documentation)
+/docs/ISSUES.zh-TW.md

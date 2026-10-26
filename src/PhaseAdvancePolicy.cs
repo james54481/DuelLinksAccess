@@ -3,6 +3,12 @@ namespace DuelLinksAccess
     public enum PhaseAdvanceTarget { None, Battle, End }
     public static class PhaseAdvancePolicy
     {
+        public static bool CanContinueAfterMenuCancellation(bool inDuel, bool ended,
+            int requestedTurn, int currentTurn, string requestedPhase, string currentPhase,
+            bool inputOpen, bool selectionActive)
+            => inDuel && !ended && requestedTurn == currentTurn
+                && requestedPhase == currentPhase && inputOpen && !selectionActive;
+
         // Availability comes from the game's opened native menu, including turn-one rules.
         public static PhaseAdvanceTarget Choose(string currentPhase, bool battleAvailable, bool endAvailable)
         {

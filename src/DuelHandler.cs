@@ -43,6 +43,7 @@ namespace DuelLinksAccess
 
         // Post-duel result screen: DuelEndMessage.OnNextButton() is the OK click
         private bool _duelResultScanned;
+        private readonly ResultScanState _resultScan = new();
         private Il2Cpp.DuelEndMessage _duelEndMessage;
 
         // Duel yes/no dialog (DuelCommonDialog) — tribute summon confirmation, etc.
@@ -122,6 +123,7 @@ namespace DuelLinksAccess
                 _tutorialArrowAnnounced = false;
                 _tutorialArrowDismissAttempted = false;
                 _duelResultScanned = false;
+                _resultScan.Reset();
                 _duelEndMessage = null;
                 _yesNoState.Reset();
                 _selEffAnnounced = false;
@@ -1152,12 +1154,34 @@ namespace DuelLinksAccess
         {
             if (!_duelResultScanned)
             {
+                if (!_resultScan.TryBegin(Time.unscaledTime)) return;
                 _duelResultScanned = true;
                 _duelEndMessage = null;
 
                 try
                 {
-                    _duelEndMessage = UnityEngine.Object.FindObjectOfType<Il2Cpp.DuelEndMessage>();
+                    // Avoid Unity's stripped generic FindObjectOfType wrapper.
+                    // Resources' non-generic native binding also finds inactive
+                    // objects/assets, so explicitly accept only a live scene UI.
+                    var candidates = Resources.FindObjectsOfTypeAll(
+                        Il2CppInterop.Runtime.Il2CppType.Of<Il2Cpp.DuelEndMessage>());
+                    foreach (var candidate in candidates)
+                    {
+                        var message = candidate?.TryCast<Il2Cpp.DuelEndMessage>();
+                        if (message == null || message.gameObject == null
+                            || !message.gameObject.activeInHierarchy
+                            || !message.gameObject.scene.IsValid()
+                            || !message.gameObject.scene.isLoaded
+                            || message.isNextButtonClicked) continue;
+                        // Multiple live result widgets are ambiguous. Do not
+                        // announce or activate an arbitrary candidate.
+                        if (_duelEndMessage != null)
+                        {
+                            _duelEndMessage = null;
+                            break;
+                        }
+                        _duelEndMessage = message;
+                    }
                     if (_duelEndMessage != null)
                     {
                         var result = _duelEndMessage.resultType;
@@ -1174,18 +1198,27 @@ namespace DuelLinksAccess
                     }
                     else
                     {
-                        // DuelEndMessage not yet created — re-scan next frame
+                        // Result UI can be created after the duel-end event.
                         _duelResultScanned = false;
                     }
                 }
                 catch (System.Exception ex)
                 {
-                    DebugLogger.Log(LogCategory.Game, "DuelResult", $"Scan error: {ex.Message}");
+                    if (_resultScan.Failed(Time.unscaledTime, ex.GetType().FullName + ": " + ex.Message))
+                        DebugLogger.Log(LogCategory.Game, "DuelResult",
+                            $"Scan error (native result lookup; retry delayed): {ex}");
+                    _duelEndMessage = null;
                     _duelResultScanned = false;
                 }
             }
 
             if (_duelEndMessage == null) return;
+            if (!_duelEndMessage.gameObject.activeInHierarchy || _duelEndMessage.isNextButtonClicked)
+            {
+                _duelEndMessage = null;
+                _duelResultScanned = false;
+                return;
+            }
 
             // Enter/Space = click OK (call OnNextButton directly)
             if (InputManager.TryConsumeKeyDown(KeyCode.Return)

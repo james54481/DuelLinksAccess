@@ -45,6 +45,7 @@ namespace DuelLinksAccess
     /// </summary>
     public static class DuelState
     {
+        internal static readonly ObservedCardIdentityStore ObservedIdentities = new();
         #region Engine locate constants
 
         private const int LocateHand = 13;
@@ -204,6 +205,91 @@ namespace DuelLinksAccess
         #endregion
 
         #region Card lookups
+
+        // james54481, 2026-10-24: only click a visible, raycast-confirmed local
+        // card's native FieldInputSender. Never substitute screen center or
+        // another card's position.
+        internal static bool TryClickFieldCard(int player, int locate, int slot, CardSnapshot expected)
+        {
+            try
+            {
+                var worker = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d;
+                bool open = worker != null && (worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.MainPhase
+                    || worker.curInputType == Il2CppYgomGame.Duel.Engine.MenuActType.BattlePhase);
+                var actual = GetFieldCard(player, locate, slot);
+                if (!actual.HasValue || !AttackFallbackPolicy.CanRetryFieldTap(
+                    player == MyPlayerNum(), open, expected.CardDbId, actual.Value.CardDbId,
+                    expected.UniqueId, actual.Value.UniqueId)) return CardClickUnavailable("identity or input changed");
+
+                var root = FindFieldCardRoot(player, locate, slot);
+                var place = root?.toLocator?.cardPlace?.TryCast<Il2CppYgomGame.Duel.BasicCardPlace>();
+                var sender = place?.inputSender;
+                var senderComponent = sender?.TryCast<UnityEngine.Component>();
+                if (place == null || !place.inputSenderEnabled || senderComponent == null
+                    || !senderComponent.gameObject.activeInHierarchy)
+                    return CardClickUnavailable("native field input sender unavailable");
+                // Use the game's own camera-aware position instead of Camera.main
+                // and the animated CardPlane. The hit target is FieldInputSender.
+                var screen = place.GetScreenPos(slot, UnityEngine.Vector2.zero);
+                if (!AttackFallbackPolicy.IsVisibleClickPoint(screen.x, screen.y, screen.z,
+                    UnityEngine.Screen.width, UnityEngine.Screen.height))
+                    return CardClickUnavailable($"native point offscreen ({screen.x},{screen.y},{screen.z})");
+                bool verified = false;
+                foreach (var camera in UnityEngine.Camera.allCameras)
+                {
+                    if (camera == null || !camera.isActiveAndEnabled || camera.targetTexture != null) continue;
+                    if (UnityEngine.Physics.Raycast(camera.ScreenPointToRay(screen), out UnityEngine.RaycastHit hit,
+                        float.PositiveInfinity, camera.cullingMask)
+                        && hit.collider != null
+                        && hit.collider.GetComponentInParent<Il2CppYgomGame.Duel.FieldInputSender>() == sender)
+                    {
+                        verified = true;
+                        break;
+                    }
+                }
+                if (!verified) return CardClickUnavailable("raycast did not match native field input sender");
+
+                // A dialog or UI panel in front of the field must win over the card.
+                var events = UnityEngine.EventSystems.EventSystem.current;
+                if (events == null) return CardClickUnavailable("no event system");
+                var data = new UnityEngine.EventSystems.PointerEventData(events);
+                data.position = new UnityEngine.Vector2(screen.x, screen.y);
+                var hits = new Il2CppSystem.Collections.Generic.List<UnityEngine.EventSystems.RaycastResult>();
+                events.RaycastAll(data, hits);
+                // james54481, 2026-10-24: this exact worker-owned InputProvider
+                // is the native field's click receiver, not a dialog overlay.
+                // Do not whitelist names, parent transforms or other providers.
+                var duelProvider = Il2CppYgomGame.Duel.DuelClient.instance?.worker3d?.inputProvider;
+                var providerComponent = duelProvider?.TryCast<UnityEngine.Component>();
+                int providerId = providerComponent != null ? providerComponent.GetInstanceID() : 0;
+                for (int i = 0; i < hits.Count; i++)
+                {
+                    var go = hits[i].gameObject;
+                    if (go == null) continue;
+                    var hitProvider = go.GetComponent<Il2CppYgomGame.Duel.InputProvider>();
+                    var hitComponent = hitProvider?.TryCast<UnityEngine.Component>();
+                    int hitId = hitComponent != null ? hitComponent.GetInstanceID() : 0;
+                    bool hasCanvas = go.GetComponentInParent<UnityEngine.Canvas>() != null;
+                    if (AttackFallbackPolicy.IsBlockingCanvasHit(hasCanvas, providerId, hitId))
+                        return CardClickUnavailable($"UI blocks native field point: {go.name}");
+                    if (hasCanvas)
+                        MelonLogger.Msg($"[FieldNav] Native field receiver verified: instance={providerId} name={go.name}");
+                }
+                MelonLogger.Msg($"[FieldNav] Verified native field click: p={player} locate={locate} uid={expected.UniqueId} screen=({screen.x:F0},{screen.y:F0}) sender={senderComponent.name}");
+                return Main.ClickViaHardwareMouse(data.position, "field card", requireForeground: true);
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Msg($"[FieldNav] Verified card click unavailable: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool CardClickUnavailable(string reason)
+        {
+            MelonLogger.Msg($"[FieldNav] Native field click skipped: {reason}");
+            return false;
+        }
 
         /// <summary>
         /// Returns the card at the given field position, or null if empty.
@@ -399,6 +485,7 @@ namespace DuelLinksAccess
                     catch { }
                 }
 
+                ObservedIdentities.Observe(uid, mrk, player == MyPlayerNum());
                 return new CardSnapshot(uid, mrk, ResolveCardName(mrk),
                     atk, def, level, IsAttack: false, IsFaceUp: false);
             }
@@ -719,6 +806,7 @@ namespace DuelLinksAccess
             switch (viewType)
             {
                 case Il2CppYgomGame.Duel.Engine.ViewType.DuelStart:
+                    ObservedIdentities.Reset();
                     _inDuel = true;
                     _duelEnded = false;
                     _localSeat = -1; // matchmaking may have assigned a new seat
@@ -729,6 +817,7 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.DuelEnd:
+                    ObservedIdentities.Reset();
                     _duelEnded = true;
                     _inDuel = false;
                     break;
@@ -766,6 +855,7 @@ namespace DuelLinksAccess
         /// <summary>Reset to a clean pre-duel state.</summary>
         public static void Reset()
         {
+            ObservedIdentities.Reset();
             _inDuel = false;
             _duelEnded = false;
             _localSeat = -1;
@@ -1126,6 +1216,9 @@ namespace DuelLinksAccess
                 }
             }
 
+            bool localIdentity = false;
+            try { localIdentity = root.toLocator?.cardPlace?.team == MyPlayerNum(); } catch { }
+            ObservedIdentities.Observe(uniqueId, cardId, localIdentity);
             return new CardSnapshot(uniqueId, cardId, ResolveCardName(cardId),
                 atk, def, level, isAttack, isFaceUp);
         }

@@ -24,6 +24,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/ObservedCardIdentityStore.cs" Link="Source/ObservedCardIdentityStore.cs" />
+    <Compile Include="../../src/ExtraBrowsePolicy.cs" Link="Source/ExtraBrowsePolicy.cs" />
+    <Compile Include="../../src/ResultScanState.cs" Link="Source/ResultScanState.cs" />
+    <Compile Include="../../src/ResultPagePolicy.cs" Link="Source/ResultPagePolicy.cs" />
+    <Compile Include="../../src/ResultRewardCatalog.cs" Link="Source/ResultRewardCatalog.cs" />
+    <Compile Include="../../src/OrbExchangePolicy.cs" Link="Source/OrbExchangePolicy.cs" />
     <Compile Include="../../src/PhaseAdvancePolicy.cs" Link="Source/PhaseAdvancePolicy.cs" />
     <Compile Include="../../src/GateLevelPolicy.cs" Link="Source/GateLevelPolicy.cs" />
     <Compile Include="..\..\src\CardSelectionPolicy.cs" Link="Source\CardSelectionPolicy.cs" />

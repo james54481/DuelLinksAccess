@@ -28,6 +28,12 @@ namespace DuelLinksAccess
 
             string result;
 
+            // Reward item icons can borrow a truncated quantity from nearby
+            // text. Prefer the game's full sibling item row, preserving its
+            // item name and quantity rather than interpreting iid as a card ID.
+            result = TryRewardItemIconText(go);
+            if (result != null) return result;
+
             // 0. SkillSelectItem2 — skill selection list with owned/locked status
             result = TrySkillSelectItem(go);
             if (result != null) return result;
@@ -96,6 +102,40 @@ namespace DuelLinksAccess
             if (result != null) return result;
 
             return TryChildUnityText(go);
+        }
+
+        private static string TryRewardItemIconText(GameObject go)
+        {
+            if (go.name != "Icon" && go.name != "TextArea" && go.name != "ButtonSet") return null;
+            try
+            {
+                var current = go.transform;
+                for (int depth = 0; current != null && depth < 5; depth++, current = current.parent)
+                {
+                    var node = current.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>();
+                    if (node?.replaceParam == null
+                        || !node.replaceParam.TryGetValue("%datapath%", out var path)
+                        || path?.ToString()?.StartsWith("DialogGet.get_data.item.", StringComparison.Ordinal) != true)
+                        continue;
+                    // iid is an ITEM id in this template, not a card DB id.
+                    // Use the game's localized item API and this row's count;
+                    // do not derive quantity from the icon/sibling label.
+                    string kind = Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(
+                        path.ToString() + ".type", "");
+                    if (kind != "item") return null;
+                    var data = node.replaceParam;
+                    if (!data.TryGetValue("%iid%", out var iidValue)
+                        || !data.TryGetValue("%count%", out var countValue)
+                        || !int.TryParse(iidValue?.ToString(), out int iid) || iid <= 0
+                        || !int.TryParse(countValue?.ToString(), out int count) || count < 0) return null;
+                    string name = Il2CppYgomGame.Utility.ItemUtil.GetName(iid);
+                    if (string.IsNullOrWhiteSpace(name)) return null;
+                    DebugLogger.Log(LogCategory.Handler, "LabelEx", $"Reward item iid={iid} count={count} name={name}");
+                    return $"{name} ×{count}";
+                }
+            }
+            catch { }
+            return null;
         }
 
         /// <summary>
