@@ -25,6 +25,11 @@ namespace DuelLinksAccess
         #region Fields
 
         private float _noticeReadDelay = -1f;
+        private float _arenaPollAt;
+        private string _arenaSignature;
+        private string _arenaPendingSignature;
+        private float _arenaStableAt;
+        private bool _arenaRefreshing;
         private int _noticeReadAttempts;
         private string _noticeBeforeActivation = "";
         private string _lastVcName = "";
@@ -51,6 +56,8 @@ namespace DuelLinksAccess
 
         // Tab-aware rescan: after clicking a tab button, force rescan
         private float _tabRescanDelay = -1f;
+        private GameObject _bannerFocusTarget;
+        private GameObject _bannerFocusRoot;
 
         // True while the current HtjsonPage is the Chronicle "Special
         // Processing" customization page. Its category tabs (Card Selection,
@@ -87,7 +94,7 @@ namespace DuelLinksAccess
 
         #region Types
 
-        private enum ItemType { Button, Slider, MapObject }
+        private enum ItemType { Button, Slider, MapObject, Information }
 
         private class ScreenItem
         {
@@ -95,6 +102,8 @@ namespace DuelLinksAccess
             public string Label;
             public ItemType Type;
             public Slider SliderComponent;
+            public Func<string> LiveLabel;
+            public Action NativeAction;
         }
 
         #endregion
@@ -185,6 +194,8 @@ namespace DuelLinksAccess
                         "[ScreenBtn] Screen root destroyed while VC name unchanged " +
                         $"('{currentVc}') — forcing rescan to recover input");
                 _lastVcName = currentVc;
+                _bannerFocusTarget = null;
+                _bannerFocusRoot = null;
                 _scanned = false;
                 _scanDelay = 0.5f;
                 _scanAttempts = 0;
@@ -265,6 +276,7 @@ namespace DuelLinksAccess
                 }
             }
 
+            PollArenaMenu();
             if (_noticeReadDelay >= 0f && !IsNoticePage()) _noticeReadDelay = -1f;
 
             // In text mode, poll for text changes to auto-read new dialogue
@@ -317,6 +329,9 @@ namespace DuelLinksAccess
                     else _noticeReadDelay = 0.5f;
                 }
             }
+            // While the banner changes its layout, do not activate a stale
+            // ordinal or let held arrows move the pending focus elsewhere.
+            if (_bannerFocusTarget != null) return;
             ProcessInput();
         }
 
@@ -446,6 +461,15 @@ namespace DuelLinksAccess
 
                 // Find clickable buttons
                 FindButtons(_screenRoot);
+                HomeBannerAccessibility.Diagnose(_screenRoot);
+                GateDataDiagnostics.Capture(_screenRoot);
+                var gateFilter = GateCharacterEntry.Find(_screenRoot);
+                if (gateFilter != null)
+                {
+                    _items.RemoveAll(i => i.Go == gateFilter || i.Go.transform.IsChildOf(gateFilter.transform));
+                    _items.Insert(0, new ScreenItem { Go = gateFilter, Label = Loc.Get("gate_open_duelist_list"),
+                        Type = ItemType.Button });
+                }
 
                 foreach (var button in PurchaseAccessibility.Find(_screenRoot))
                 {
@@ -469,13 +493,53 @@ namespace DuelLinksAccess
                 {
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                         $"Also scanning header: {headerRoot.name}");
-                    FindSliders(headerRoot);
+                    if (_screenRoot.name != "PvpMainMenu") FindSliders(headerRoot);
                     FindButtons(headerRoot);
                 }
 
                 // Post-process: remove duplicates and junk
                 DeduplicateItems();
+                _items.RemoveAll(i => HomeBannerAccessibility.Redundant(_screenRoot, i.Go));
+                // The series icon and ChangeButton open the same native menu.
+                // Keep the named button; retain the icon if that button is absent.
+                bool hasGateSwitch = _items.Any(i => i.Go != null && i.Go.name == "ChangeButton"
+                    && i.Go.activeInHierarchy && i.Type == ItemType.Button);
+                _items.RemoveAll(i => i.Go != null && GateNavigationLabelPolicy.HideDuplicate(
+                    _screenRoot.name, i.Go.name, hasGateSwitch));
+                _items.RemoveAll(i => GateMissionAccessibility.IsEmptySwitch(_screenRoot, i.Go));
+                if (_screenRoot.name == "Gate")
+                    foreach (var missionItem in _items.Where(i => GateMissionAccessibility.IsSwitch(_screenRoot, i.Go)))
+                    {
+                        missionItem.Label = GateMissionAccessibility.Label(_screenRoot);
+                        var missionRoot = _screenRoot;
+                        missionItem.LiveLabel = () => GateMissionAccessibility.Label(missionRoot);
+                    }
+                string gateCost = GateCostAccessibility.Read(_screenRoot);
+                if (gateCost != null)
+                    _items.Insert(gateFilter != null ? 1 : 0, new ScreenItem {
+                        Go = _screenRoot, Label = gateCost, Type = ItemType.Information,
+                        LiveLabel = () => GateCostAccessibility.Read(_screenRoot) });
                 FilterItems();
+                if (_screenRoot.name == "Home")
+                {
+                    _items.RemoveAll(i => HomeLevelRewards.IsHandledScrollbar(_screenRoot, i.Go));
+                    foreach (var back in _items.Where(i => i.Go != null && i.Go.name == "BackButton"))
+                        back.Label = Loc.Get("screen_back");
+                }
+                var homeRewards = HomeLevelRewards.Read(_screenRoot);
+                foreach (var reward in homeRewards)
+                {
+                    if (reward.Go != _screenRoot)
+                        _items.RemoveAll(i => i.Go == reward.Go || i.Go.transform.IsChildOf(reward.Go.transform));
+                    _items.Add(new ScreenItem { Go = reward.Go, Label = reward.Label,
+                        Type = reward.Activate == null ? ItemType.Information : ItemType.Button,
+                        NativeAction = reward.Activate, LiveLabel = reward.LiveLabel });
+                }
+                string rewardEntry = GateRewardBrowser.EntryLabel(_screenRoot);
+                if (rewardEntry != null)
+                    _items.Insert(Math.Min(_items.Count, (gateFilter != null ? 1 : 0) + (gateCost != null ? 1 : 0)),
+                        new ScreenItem { Go = _screenRoot, Label = rewardEntry, Type = ItemType.Button,
+                            NativeAction = () => GateRewardBrowser.Begin(_screenRoot) });
 
                 // On the Home/Duel World screen, also scan 3D map objects (NPCs, events, etc.)
                 if (GameStateTracker.CurrentScreen == GameScreen.Home)
@@ -513,9 +577,33 @@ namespace DuelLinksAccess
                 bool suppressLineupAnnounce = IsAsyncLineupScreen()
                     && HasOnlyTrivialItems() && _scanAttempts < 12;
 
+                if (_screenRoot.name == "PvpMainMenu")
+                    _arenaSignature = ArenaSignature();
                 if (isResultScreen) { _textMode = false; return; }
+                if (_arenaRefreshing) return;
+                if (_bannerFocusTarget != null)
+                {
+                    if (_screenRoot == _bannerFocusRoot && _screenRoot.name == "Single")
+                    {
+                        int index = _items.FindIndex(i => i.Go == _bannerFocusTarget);
+                        if (index >= 0)
+                        {
+                            _focusIndex = index;
+                            _items[index].Label = HomeBannerAccessibility.Label(_items[index].Go) ?? _items[index].Label;
+                            DebugLogger.Log(LogCategory.Handler, "HomeBanner", $"Restored switch focus at {index + 1}");
+                        }
+                    }
+                    _bannerFocusTarget = null;
+                    _bannerFocusRoot = null;
+                }
                 if (_items.Count > 0 && !suppressLineupAnnounce)
                 {
+                    string gateContext = GateContextAccessibility.Read(_screenRoot);
+                    if (gateContext != null)
+                    {
+                        _lastReadText = gateContext;
+                        ScreenReader.SayQueued(gateContext);
+                    }
                     // Result screens handle their own announcement in ScanResultScreen
                     ScreenReader.SayQueued(
                         Loc.Get("screen_buttons", _items.Count));
@@ -639,6 +727,12 @@ namespace DuelLinksAccess
                         // If j is a child of i, remove the PARENT (i)
                         if (_items[j].Go.transform.IsChildOf(_items[i].Go.transform))
                         {
+                            if (KeepArenaDeckParent(_items[i].Go, _items[j].Go))
+                            {
+                                toRemove.Add(j);
+                                DebugLogger.Log(LogCategory.Handler, "Arena", "Keeping native deck editor button instead of child card");
+                                continue;
+                            }
                             toRemove.Add(i);
                             DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                                 $"Dedup: removing parent \"{_items[i].Label}\" ({_items[i].Go.name}), keeping child ({_items[j].Go.name})");
@@ -647,6 +741,12 @@ namespace DuelLinksAccess
                         // If i is a child of j, remove the PARENT (j)
                         else if (_items[i].Go.transform.IsChildOf(_items[j].Go.transform))
                         {
+                            if (KeepArenaDeckParent(_items[j].Go, _items[i].Go))
+                            {
+                                toRemove.Add(i);
+                                DebugLogger.Log(LogCategory.Handler, "Arena", "Keeping native deck editor button instead of child card");
+                                break;
+                            }
                             toRemove.Add(j);
                             DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                                 $"Dedup: removing parent \"{_items[j].Label}\" ({_items[j].Go.name}), keeping child ({_items[i].Go.name})");
@@ -1541,6 +1641,13 @@ namespace DuelLinksAccess
                     // Identify special map objects by IL2CPP type
                     try
                     {
+                        var billboard = mapObj.TryCast<Il2CppYgomGame.Single.BillboardObject>();
+                        if (billboard != null && typeName == go.name)
+                        {
+                            string eventLabel = HomeHandler.TryGetEventBillboardLabel(
+                                billboard.resourcePath, data.getUrl()?.ToString());
+                            if (!string.IsNullOrWhiteSpace(eventLabel)) typeName = eventLabel;
+                        }
                         var school = mapObj.TryCast<Il2CppYgomGame.Single.SchoolObject>();
                         if (school != null)
                             typeName = Loc.Get("map_school");
@@ -1690,8 +1797,16 @@ namespace DuelLinksAccess
                     if (go == null || !go.activeInHierarchy) continue;
                     if (processed.Contains(go)) continue;
 
+                    // Arena deck details are a separate panel. Only explicit
+                    // native navigation controls belong to the header scan.
+                    if (_screenRoot != null && _screenRoot.name == "PvpMainMenu" && root != _screenRoot
+                        && go.name != "BackButton" && !go.name.StartsWith("FooterButton", StringComparison.Ordinal))
+                        continue;
+
                     // Skip slider sub-elements (already found as Sliders)
                     if (selectable is Slider) continue;
+                    if (_screenRoot != null && _screenRoot.name == "PvpMainMenu"
+                        && selectable.TryCast<Scrollbar>() != null) continue;
                     if (IsChildOfSlider(go, root)) continue;
 
                     // Skip common layout/background elements
@@ -1702,6 +1817,13 @@ namespace DuelLinksAccess
                     if (IsJunkHtjsonElement(go.name)) continue;
 
                     string label = LabelExtractor.GetLabel(go);
+                    string gateKey = GateNavigationLabelPolicy.ButtonKey(_screenRoot?.name, go.name);
+                    if (gateKey != null)
+                        label = gateKey == "gate_change_style" ? Loc.Get(gateKey, label) : Loc.Get(gateKey);
+                    string deckViewKey = DeckViewLabelPolicy.ButtonKey(_screenRoot?.name, go.name);
+                    if (deckViewKey != null) label = Loc.Get(deckViewKey);
+                    if (_screenRoot != null && _screenRoot.name == "PvpMainMenu")
+                        label = ArenaLabel(go, label);
                     if (IsNoticePage())
                         label = AccessibleUiText.NoticeLabel(go, label);
 
@@ -1732,6 +1854,317 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"[ScreenBtn] FindButtons error: {ex.Message}");
             }
+        }
+
+        private string ArenaSignature()
+        {
+            if (_screenRoot == null || _screenRoot.name != "PvpMainMenu") return "";
+            var parts = new List<string>();
+            foreach (var root in new[] { _screenRoot, GetHeaderRoot() })
+            {
+                if (root == null) continue;
+                foreach (var control in root.GetComponentsInChildren<Selectable>(true))
+                {
+                    if (control == null || !control.gameObject.activeInHierarchy) continue;
+                    if (root != _screenRoot && control.name != "BackButton"
+                        && !control.name.StartsWith("FooterButton", StringComparison.Ordinal)) continue;
+                    parts.Add(control.GetInstanceID() + ":" + control.interactable);
+                }
+                if (root == _screenRoot)
+                {
+                    // Native labels and image titles can arrive after buttons.
+                    foreach (var text in root.GetComponentsInChildren<Text>(true))
+                        if (text != null && text.gameObject.activeInHierarchy)
+                            parts.Add("text:" + text.GetInstanceID() + ":" + text.text);
+                    foreach (var image in root.GetComponentsInChildren<Image>(true))
+                        if (image != null && image.gameObject.activeInHierarchy && image.sprite != null)
+                            parts.Add("image:" + image.GetInstanceID() + ":" + image.sprite.name);
+                }
+            }
+            parts.Sort(StringComparer.Ordinal);
+            return string.Join("|", parts);
+        }
+
+        private void PollArenaMenu()
+        {
+            if (_screenRoot == null || _screenRoot.name != "PvpMainMenu")
+            { _arenaSignature = null; _arenaPendingSignature = null; return; }
+            if (!_scanned || Time.unscaledTime < _arenaPollAt) return;
+            _arenaPollAt = Time.unscaledTime + 0.3f;
+            try
+            {
+                string signature = ArenaSignature();
+                if (signature == _arenaSignature) { _arenaPendingSignature = null; return; }
+                if (signature != _arenaPendingSignature)
+                { _arenaPendingSignature = signature; _arenaStableAt = Time.unscaledTime; return; }
+                if (Time.unscaledTime - _arenaStableAt < 0.6f) return;
+                var previousIds = new HashSet<int>(_items.Where(i => LabelExtractor.IsAlive(i.Go))
+                    .Select(i => i.Go.GetInstanceID()));
+                int focusedId = _focusIndex >= 0 && _focusIndex < _items.Count
+                    && LabelExtractor.IsAlive(_items[_focusIndex].Go) ? _items[_focusIndex].Go.GetInstanceID() : 0;
+                _arenaRefreshing = true;
+                try { ScanScreen(); } finally { _arenaRefreshing = false; }
+                // New controls in an expanded panel take focus; otherwise keep
+                // the same target. Identity, never a retained ordinal, is used.
+                int next = _items.FindIndex(i => LabelExtractor.IsAlive(i.Go)
+                    && i.Go.transform.IsChildOf(_screenRoot.transform)
+                    && !previousIds.Contains(i.Go.GetInstanceID()));
+                if (next < 0) next = _items.FindIndex(i => LabelExtractor.IsAlive(i.Go) && i.Go.GetInstanceID() == focusedId);
+                _focusIndex = next >= 0 ? next : 0;
+                _arenaPendingSignature = null;
+                DebugLogger.Log(LogCategory.Handler, "Arena", $"Native control change: refreshed {_items.Count} items");
+                if (_items.Count > 0) AnnounceCurrentItem();
+            }
+            catch (Exception ex) { DebugLogger.Log(LogCategory.Handler, "Arena", "Refresh: " + ex.Message); }
+        }
+
+        private bool KeepArenaDeckParent(GameObject parent, GameObject child)
+        {
+            if (parent == null || child == null || _screenRoot == null) return false;
+            var button = parent.GetComponent<Button>();
+            var data = parent.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>()?.replaceParam;
+            if (data == null || !data.TryGetValue("%basepath%", out var path)
+                || !data.TryGetValue("%deckCard%", out var card)
+                || !int.TryParse(card?.ToString(), out int cardId)) return false;
+            return ArenaMenuPolicy.PreferDeckEditor(_screenRoot.name, child.name,
+                button != null && button.interactable && parent.activeInHierarchy, path?.ToString(), cardId);
+        }
+
+        private string RankedHistoryLabel(GameObject go)
+        {
+            if (go.name != "duelist" && go.name != "DeckSelectItem2") return null;
+            Transform scope = null;
+            // The duelist Selectable is itself the row container; the deck
+            // control is nested inside it. Include self before walking parents.
+            for (var t = go.transform; t != null && t.IsChildOf(_screenRoot.transform); t = t.parent)
+            {
+                var controls = t.GetComponentsInChildren<Selectable>(true)
+                    .Where(c => c != null && c.gameObject.activeInHierarchy).ToArray();
+                if (controls.Count(c => c.gameObject.name == "duelist") == 1
+                    && controls.Count(c => c.gameObject.name == "DeckSelectItem2") == 1) { scope = t; break; }
+                if (controls.Count(c => c.gameObject.name == "duelist") > 1) break;
+            }
+            string actionKey = go.name == "DeckSelectItem2" ? "ranked_history_deck" : "ranked_history_entry";
+            if (scope == null) return Loc.Get(actionKey, Loc.Get("ranked_history_unknown_context"));
+            string listPath = null;
+            for (var t = go.transform; t != null && t.IsChildOf(_screenRoot.transform); t = t.parent)
+            {
+                var data = t.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>()?.replaceParam;
+                if (data == null) continue;
+                foreach (string key in new[] { "%datapath%", "%sublooppath%" })
+                    if (data.TryGetValue(key, out var path)) listPath ??= RankedHistoryPolicy.ListPath(path?.ToString());
+                if (listPath != null) break;
+            }
+            var visible = scope.GetComponentsInChildren<Text>(true)
+                .Where(t => t != null && t.gameObject.activeInHierarchy)
+                .Select(t => LabelExtractor.StripRichText(t.text)).ToArray();
+            var entries = new List<RankedHistoryPolicy.Entry>();
+            if (listPath != null)
+            {
+                var nativeList = Il2CppYgomSystem.Utility.ClientWork.getListByJsonPath(listPath, null);
+                if (nativeList != null && nativeList.Count <= 100)
+                    for (int index = 0; index < nativeList.Count; index++)
+                    {
+                        string Read(string key) => LabelExtractor.StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                            .getStringByJsonPath(listPath + "." + index + "." + key, ""));
+                        entries.Add(new RankedHistoryPolicy.Entry(Read("uname"), Read("time"), Read("result"), Read("rank")));
+                    }
+            }
+            var match = RankedHistoryPolicy.Match(entries, visible);
+            DebugLogger.Log(LogCategory.Handler, "ArenaHistory",
+                $"target={go.name} scope={scope.name} text=[{string.Join(" | ", visible)}] list={listPath} matched={match != null}");
+            if (match == null)
+            {
+                string nativeText = string.Join("，", visible.Where(t => !string.IsNullOrWhiteSpace(t)).Distinct());
+                return Loc.Get(actionKey, string.IsNullOrWhiteSpace(nativeText) ? Loc.Get("ranked_history_unknown_context") : nativeText);
+            }
+            string context = Loc.Get("ranked_history_context", match.Name,
+                Loc.Get(RankedHistoryPolicy.ResultKey(match.Result)), match.Time, match.Rank);
+            return Loc.Get(actionKey, context);
+        }
+
+        private string RankedControlLabel(GameObject go, string fallback)
+        {
+            for (var nodeGo = go.transform; nodeGo != null && nodeGo.IsChildOf(_screenRoot.transform); nodeGo = nodeGo.parent)
+            {
+                var data = nodeGo.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>()?.replaceParam;
+                if (data == null) continue;
+                if (data.TryGetValue("%sublooppath%", out var row))
+                {
+                    string path = row?.ToString();
+                    int category = ArenaMenuPolicy.RewardCategory(path);
+                    if (category >= 0)
+                    {
+                        int id = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(path + ".item.id", -1);
+                        int count = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(path + ".item.count", -1);
+                        string itemName = null;
+                        try { if (id > 0) itemName = LabelExtractor.StripRichText(Il2CppYgomGame.Utility.ItemUtil.GetName(id)); }
+                        catch { /* Preserve the row's count and threshold with an explicit unknown name. */ }
+                        if (string.IsNullOrWhiteSpace(itemName)) itemName = Loc.Get("shop_unknown_item");
+                        string amount = count >= 0 ? count.ToString() : Loc.Get("ranked_unknown_quantity");
+                        string threshold;
+                        if (category == 0)
+                        {
+                            int wins = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(path + ".point", -1);
+                            threshold = wins >= 0 ? Loc.Get("ranked_wins_threshold", wins) : Loc.Get("ranked_unknown_threshold");
+                        }
+                        else
+                        {
+                            threshold = LabelExtractor.StripRichText(Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(path + ".point", ""));
+                            if (string.IsNullOrWhiteSpace(threshold)) threshold = Loc.Get("ranked_unknown_threshold");
+                        }
+                        DebugLogger.Log(LogCategory.Handler, "ArenaReward", $"{path}: item={id} count={count} threshold={threshold}");
+                        return Loc.Get(category == 0 ? "ranked_cumulative_reward" : "ranked_rank_reward", threshold, itemName, amount);
+                    }
+                    // Do not relabel historical match rows as page buttons.
+                    return null;
+                }
+                if (data.TryGetValue("%btnpath%", out var btnPath))
+                {
+                    string path = btnPath?.ToString();
+                    if (ArenaMenuPolicy.IsDuelButton(path))
+                    {
+                        string nativeLabel = LabelExtractor.StripRichText(Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(path + ".label", ""));
+                        return string.IsNullOrWhiteSpace(nativeLabel) ? Loc.Get("ranked_duel") : nativeLabel;
+                    }
+                }
+                if (go.name == "btn" && data.TryGetValue("%localpath%", out var local)
+                    && ArenaMenuPolicy.IsRankedPage(local?.ToString()))
+                {
+                    if (!IsWeakLabel(fallback, go)) return fallback;
+                    var text = go.GetComponentsInChildren<Text>(true)
+                        .Where(t => t != null && t.gameObject.activeInHierarchy)
+                        .Select(t => LabelExtractor.StripRichText(t.text)).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
+                    return text ?? Loc.Get("ranked_unknown_control");
+                }
+            }
+            return null;
+        }
+
+        private string ArenaLabel(GameObject go, string fallback)
+        {
+            try
+            {
+                string historyLabel = RankedHistoryLabel(go);
+                if (historyLabel != null) return historyLabel;
+                string rankedLabel = RankedControlLabel(go, fallback);
+                if (rankedLabel != null) return rankedLabel;
+                // Inner controls inherit the banner's basepath too. Resolve
+                // their own row/action first; never overwrite them with a mode title.
+                string rowPath = null;
+                string playerPath = null;
+                for (var row = go.transform; row != null && row.IsChildOf(_screenRoot.transform); row = row.parent)
+                {
+                    var rowData = row.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>()?.replaceParam;
+                    if (rowData == null) continue;
+                    if (rowData.TryGetValue("%datapath%", out var rowValue)
+                        && ArenaMenuPolicy.IsReplayRow(rowValue?.ToString())) rowPath = rowValue.ToString();
+                    if (playerPath == null && rowData.TryGetValue("%playerpath%", out var playerValue))
+                        playerPath = playerValue?.ToString();
+                    if (rowPath != null) break;
+                }
+                if (rowPath != null)
+                {
+                    string Native(string suffix) => LabelExtractor.StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                        .getStringByJsonPath(rowPath + suffix, ""));
+                    string left = Native(".playerL.name"), right = Native(".playerR.name"), date = Native(".term");
+                    string context = Loc.Get("arena_replay_context", left, right, date);
+                    if (go.name == "card")
+                    {
+                        string player = playerPath == rowPath + ".playerL" ? left
+                            : playerPath == rowPath + ".playerR" ? right : Loc.Get("arena_unknown_player");
+                        return Loc.Get("arena_replay_card", player, context);
+                    }
+                    var texts = go.GetComponentsInChildren<Text>(true)
+                        .Where(text => text != null && text.gameObject.activeInHierarchy)
+                        .Select(text => LabelExtractor.StripRichText(text.text)).ToArray();
+                    // Only read an action when it belongs to this control.
+                    // A row's btn.label must not turn its image-only lock into Play.
+                    string play = Native(".btn.label");
+                    string action = texts.FirstOrDefault(text => text == "重溫" || text == "刪除" || text == "分享"
+                        || (!string.IsNullOrWhiteSpace(play) && text == play));
+                    if (action == null && (fallback == "重溫" || fallback == "刪除" || fallback == "分享"
+                        || (!string.IsNullOrWhiteSpace(play) && fallback == play))) action = fallback;
+                    if (action == null)
+                    {
+                        var icons = go.GetComponentsInChildren<Image>(true)
+                            .Where(image => image != null && image.gameObject.activeInHierarchy && image.sprite != null)
+                            .Select(image => image.sprite.name).Distinct().ToArray();
+                        var widget = go.GetComponent<Il2CppYgomSystem.Htjson.ButtonWidget>();
+                        // Resolve only the two visually and behaviorally verified
+                        // states. The row's `lock` boolean is not current state.
+                        string lockKey = ArenaMenuPolicy.ReplayLockActionKey(icons);
+                        if (lockKey != null) action = Loc.Get(lockKey);
+                        else if (ArenaMenuPolicy.HasLockIcon(icons)) action = Loc.Get("arena_replay_lock_settings");
+                        if (Main.DebugMode)
+                            DebugLogger.Log(LogCategory.Handler, "Arena",
+                                $"Replay control {rowPath}: icons=[{string.Join(" | ", icons)}] " +
+                                $"normal={widget?.normalSprite?.name} toggle={widget?.toggleSprite?.name} " +
+                                $"label={widget?.label} toggleLabel={widget?.toggleLabel}");
+                    }
+                    return Loc.Get("arena_replay_action", action ?? Loc.Get("arena_unknown_action"), context);
+                }
+                // Non-replay expanded controls keep their native labels too.
+                for (var row = go.transform; row != null && row.IsChildOf(_screenRoot.transform); row = row.parent)
+                {
+                    var rowData = row.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>()?.replaceParam;
+                    if (rowData != null && (rowData.ContainsKey("%datapath%") || rowData.ContainsKey("%sublooppath%")))
+                        return fallback;
+                }
+                for (var t = go.transform; t != null && t.IsChildOf(_screenRoot.transform); t = t.parent)
+                {
+                    var data = t.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>()?.replaceParam;
+                    if (data == null || !data.TryGetValue("%basepath%", out var value)) continue;
+                    string path = value?.ToString();
+                    if (!ArenaMenuPolicy.IsBannerPath(path)) continue;
+                    string name = LabelExtractor.ArenaBannerName(path);
+                    if (name == null)
+                    {
+                        string spriteKey = ArenaMenuPolicy.SpriteTitleKey(go.GetComponentsInChildren<Image>(true)
+                            .Where(i => i != null && i.gameObject.activeInHierarchy && i.sprite != null)
+                            .Select(i => i.sprite.name));
+                        if (spriteKey != null) name = Loc.Get(spriteKey);
+                    }
+                    // Do not relabel the separate deck/card target as the mode entry.
+                    if (data.TryGetValue("%deckCard%", out _))
+                    {
+                        string deckName = LabelExtractor.StripRichText(Il2CppYgomSystem.Utility.ClientWork
+                            .getStringByJsonPath(path + ".data.banner.deck.name", ""));
+                        return Loc.Get("arena_deck_preview", string.IsNullOrWhiteSpace(deckName)
+                            ? Loc.Get("arena_unknown_deck") : deckName);
+                    }
+                    if (Main.DebugMode && name == null)
+                    {
+                        var spriteNames = go.GetComponentsInChildren<Image>(true)
+                            .Where(i => i != null && i.sprite != null).Select(i => i.sprite.name).Distinct();
+                        DebugLogger.Log(LogCategory.Handler, "Arena", $"Unidentified banner {path}: sprites=[{string.Join(" | ", spriteNames)}]");
+                    }
+                    return string.IsNullOrWhiteSpace(name)
+                        ? (IsWeakLabel(fallback, go) ? Loc.Get("arena_unknown_banner") : fallback)
+                        : name + (IsWeakLabel(fallback, go) || name.Contains(fallback) ? "" : ", " + fallback);
+                }
+            }
+            catch (Exception ex) { DebugLogger.Log(LogCategory.Handler, "Arena", ex.Message); }
+            return fallback;
+        }
+
+        private static void RevealArenaItem(GameObject go)
+        {
+            try
+            {
+                var scroll = go.GetComponentInParent<ScrollRect>();
+                if (scroll == null || !scroll.vertical || scroll.content == null) return;
+                var view = scroll.viewport ?? scroll.GetComponent<RectTransform>();
+                if (view == null) return;
+                Canvas.ForceUpdateCanvases();
+                var bounds = RectTransformUtility.CalculateRelativeRectTransformBounds(view, go.transform);
+                float delta = ArenaMenuPolicy.ScrollCorrection(bounds.min.y, bounds.max.y,
+                    view.rect.yMin, view.rect.yMax, scroll.content.rect.height - view.rect.height);
+                if (delta == 0) return;
+                scroll.StopMovement();
+                scroll.verticalNormalizedPosition = Mathf.Clamp01(scroll.verticalNormalizedPosition + delta);
+            }
+            catch (Exception ex) { DebugLogger.Log(LogCategory.Handler, "Arena", "Reveal: " + ex.Message); }
         }
 
         private static bool IsLayoutElement(string goName)
@@ -1778,6 +2211,7 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            if (GateRewardBrowser.Handle(_screenRoot)) return;
             if (_textMode)
             {
                 ProcessTextModeInput();
@@ -1843,6 +2277,8 @@ namespace DuelLinksAccess
             }
             else if (InputManager.TryConsumeKeyDown(KeyCode.T))
             {
+                string gateContext = GateContextAccessibility.Read(_screenRoot);
+                if (gateContext != null) _lastReadText = gateContext;
                 // Re-read page text (Htjson pages with explanatory content)
                 if (!string.IsNullOrEmpty(_lastReadText))
                     ScreenReader.Say(_lastReadText);
@@ -1934,6 +2370,9 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+            if (item.LiveLabel != null) item.Label = item.LiveLabel() ?? item.Label;
+            if (_screenRoot?.name == "Single" && item.Go != null && item.Go.name == "ListOpenButton")
+                item.Label = HomeBannerAccessibility.Label(item.Go) ?? item.Label;
 
             // Guard: button may have been destroyed since scan
             if (!LabelExtractor.IsAlive(item.Go))
@@ -1964,6 +2403,7 @@ namespace DuelLinksAccess
             }
 
             int pos = _focusIndex + 1;
+            if (_screenRoot != null && _screenRoot.name == "PvpMainMenu") RevealArenaItem(item.Go);
             int total = _items.Count;
 
             string msg;
@@ -2107,7 +2547,27 @@ namespace DuelLinksAccess
         {
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
+            // An expansion can replace controls without changing the VC.
+            // Do not activate a cached ordinal during that transition.
+            if (_screenRoot != null && _screenRoot.name == "PvpMainMenu"
+                && ArenaSignature() != _arenaSignature)
+            {
+                ScreenReader.Say(Loc.Get("screen_rescan"));
+                return;
+            }
+
             var item = _items[_focusIndex];
+            if (item.Type == ItemType.Information)
+            {
+                if (item.LiveLabel != null) item.Label = item.LiveLabel() ?? item.Label;
+                ScreenReader.Say(item.Label);
+                return;
+            }
+            if (item.NativeAction != null)
+            {
+                if (LabelExtractor.IsAlive(item.Go)) item.NativeAction();
+                return;
+            }
 
             // Guard: button may have been destroyed since scan
             if (!LabelExtractor.IsAlive(item.Go))
@@ -2122,6 +2582,8 @@ namespace DuelLinksAccess
             {
                 try
                 {
+                    if (GateCharacterEntry.Activate(_screenRoot, item.Go)) return;
+                    if (GateMissionAccessibility.Activate(_screenRoot, item.Go)) return;
                     if (GateLevelAccessibility.TryActivate(item.Go))
                     {
                         _tabRescanDelay = 0.5f;
@@ -2137,6 +2599,14 @@ namespace DuelLinksAccess
             }
 
             // Map objects: call TapObject on the MapObjectBase component
+            if (HomeControlAccessibility.ActivateDetails(_screenRoot, item.Go)) return;
+            if (_screenRoot?.name == "Single" && HomeBannerAccessibility.Activate(item.Go))
+            {
+                _bannerFocusTarget = item.Go;
+                _bannerFocusRoot = _screenRoot;
+                _tabRescanDelay = 0.5f;
+                return;
+            }
             if (item.Type == ItemType.MapObject)
             {
                 ActivateMapObject(item);

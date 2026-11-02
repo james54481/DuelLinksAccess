@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\src\BannerDuplicatePolicy.cs" Link="Source\BannerDuplicatePolicy.cs" />
+    <Compile Include="..\..\src\HomeRewardCardPolicy.cs" Link="Source\HomeRewardCardPolicy.cs" />
+    <Compile Include="..\..\src\HomeRewardDetailPolicy.cs" Link="Source\HomeRewardDetailPolicy.cs" />
+    <Compile Include="..\..\src\HomeLabelPolicy.cs" Link="Source\HomeLabelPolicy.cs" />
     <ProjectReference Include="../../updater/DuelLinksAccess.Updater.Core/DuelLinksAccess.Updater.Core.csproj" />
     <ProjectReference Include="../../updater/Fixtures/Old/Old.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../updater/Fixtures/New/New.csproj" ReferenceOutputAssembly="false" />
@@ -24,6 +28,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/RankedHistoryPolicy.cs" Link="Source/RankedHistoryPolicy.cs" />
+    <Compile Include="../../src/DeckViewLabelPolicy.cs" Link="Source/DeckViewLabelPolicy.cs" />
+    <Compile Include="../../src/GateNavigationLabelPolicy.cs" Link="Source/GateNavigationLabelPolicy.cs" />
+    <Compile Include="../../src/GateContextPolicy.cs" Link="Source/GateContextPolicy.cs" />
+    <Compile Include="../../src/GateCostPolicy.cs" Link="Source/GateCostPolicy.cs" />
+    <Compile Include="../../src/GateRewardPolicy.cs" Link="Source/GateRewardPolicy.cs" />
+    <Compile Include="../../src/GateSwitchPolicy.cs" Link="Source/GateSwitchPolicy.cs" />
+    <Compile Include="../../src/BoostItemPolicy.cs" Link="Source/BoostItemPolicy.cs" />
+    <Compile Include="../../src/ArenaMenuPolicy.cs" Link="Source/ArenaMenuPolicy.cs" />
     <Compile Include="../../src/ObservedCardIdentityStore.cs" Link="Source/ObservedCardIdentityStore.cs" />
     <Compile Include="../../src/ExtraBrowsePolicy.cs" Link="Source/ExtraBrowsePolicy.cs" />
     <Compile Include="../../src/ResultScanState.cs" Link="Source/ResultScanState.cs" />
@@ -60,7 +73,10 @@
     <Compile Include="..\..\src\LabelLanguagePolicy.cs" Link="Source\LabelLanguagePolicy.cs" />
     <Compile Include="..\..\src\ScreenClassificationPolicy.cs" Link="Source\ScreenClassificationPolicy.cs" />
     <Compile Include="..\..\src\SpeechTextFormatter.cs" Link="Source\SpeechTextFormatter.cs" />
+    <Compile Include="..\..\src\TicketBrowseSourcePolicy.cs" Link="Source\TicketBrowseSourcePolicy.cs" />
+    <Compile Include="..\..\src\ChronicleItemPolicy.cs" Link="Source\ChronicleItemPolicy.cs" />
     <Compile Include="..\..\src\TicketExchangePolicy.cs" Link="Source\TicketExchangePolicy.cs" />
+    <Compile Include="..\..\src\TraderPresentationPolicy.cs" Link="Source\TraderPresentationPolicy.cs" />
     <Compile Include="..\..\src\TradeExecutionPolicy.cs" Link="Source\TradeExecutionPolicy.cs" />
     <Compile Include="..\..\src\TutorialArrowPolicy.cs" Link="Source\TutorialArrowPolicy.cs" />
     <Compile Include="..\..\src\TurnAnnouncementTracker.cs" Link="Source\TurnAnnouncementTracker.cs" />

@@ -100,6 +100,8 @@ namespace DuelLinksAccess
             public GameObject SettingsTarget; // real control; Go remains native action root
             public Action NativeAction; // data-backed controls, independent of recycled cells
             public Func<string> LiveLabel;
+            public Func<string> UnavailableReason; // native disabled state, read again at activation
+            public bool DeferredActivationLabel; // native checkbox updates after click dispatch
             public Action<int> AdjustChoice;
         }
 
@@ -375,6 +377,10 @@ namespace DuelLinksAccess
                 // Collapse duplicate Htjson list rows (missions, reward lists)
                 // and give their Info buttons row context before reporting.
                 if (_settingsVc == null) TidyHtjsonListItems();
+                ApplyBoostItemLabels(dialogRoot);
+                ApplyChronicleItemLabels(dialogRoot);
+                TidyGateSwitchItems(dialogRoot);
+                TidyGateRewardRateItems(dialogRoot);
 
                 MelonLogger.Msg($"[Dialog] Found {_items.Count} interactive items");
 
@@ -1763,6 +1769,7 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            PollBoostActivationLabel();
             if (_characterSelectionBusy) return;
             // Text mode: no buttons, just text — Enter/Space to dismiss
             if (_textMode)
@@ -1968,6 +1975,11 @@ namespace DuelLinksAccess
             }
 
             var itemSelectable = GetNearestSelectable(item.Go);
+            if (item.UnavailableReason != null)
+            {
+                string reason = item.UnavailableReason();
+                if (!string.IsNullOrWhiteSpace(reason)) { ScreenReader.Say(reason); return; }
+            }
             if (!DialogControlPolicy.CanActivate(
                 itemSelectable != null,
                 itemSelectable?.interactable == true))
@@ -2022,6 +2034,10 @@ namespace DuelLinksAccess
                     if (ygomBtn != null && ygomBtn.gameObject != null
                         && IsControlInteractable(ygomBtn.gameObject))
                     {
+                        if (_chronicleExchangeRoot != null && item.Go.name == "btn"
+                            && item.Go.transform.IsChildOf(_chronicleExchangeRoot.transform)
+                            && AccessibleUiPolicy.ConfirmationAction(item.Label) == "confirm")
+                            ChronicleReceiptFlow.Begin(_chronicleExchangeRoot);
                         MelonLogger.Msg($"[Dialog] Htjson ButtonWidget, clicking YgomButton on {ygomBtn.gameObject.name}");
                         var btnGo = ygomBtn.gameObject;
                         UnityEngine.EventSystems.ExecuteEvents.Execute(
@@ -2123,7 +2139,10 @@ namespace DuelLinksAccess
                         UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
                 }
 
-                ScreenReader.Say(item.Label);
+                if (item.DeferredActivationLabel)
+                    QueueBoostActivationLabel(item);
+                else
+                    ScreenReader.Say(item.Label);
 
                 // Schedule a post-activation rescan to detect stacked dialogs
                 // (e.g. clicking "Privacy Notice" opens a new dialog on top)

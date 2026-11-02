@@ -22,6 +22,9 @@ namespace DuelLinksAccess
             catch { return null; }
         }
 
+        public static bool CanOpenBoxChipPicker(bool selectedOfferMatches, bool active, bool interactable)
+            => selectedOfferMatches && active && interactable;
+
         public static bool CanClick(
             int expectedItemId,
             int actualItemId,

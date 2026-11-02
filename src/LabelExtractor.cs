@@ -25,6 +25,26 @@ namespace DuelLinksAccess
         public static string GetLabel(GameObject go)
         {
             if (go == null) return "Button";
+            string bannerLabel = HomeBannerAccessibility.Label(go);
+            if (bannerLabel != null) return bannerLabel;
+
+            // Share verified Home control names with both curated and raw
+            // browsing. Scope by the actual content hierarchy, never by name alone.
+            try
+            {
+                for (var ancestor = go.transform; ancestor != null; ancestor = ancestor.parent)
+                    if (ancestor.name == "Single" || ancestor.name == "Home")
+                    {
+                        string key = HomeLabelPolicy.Key(ancestor.name, go.name, go.transform.parent?.name);
+                        if (go.name == "MenuButton" && go.GetComponentsInChildren<Text>(true)
+                            .Any(t => t != null && t.gameObject.activeInHierarchy
+                                && StripRichText(t.text)?.Trim() == "WORLD"))
+                            key = "home_return_world";
+                        if (key != null) return Loc.Get(key);
+                        break;
+                    }
+            }
+            catch { }
 
             string result;
 
@@ -524,6 +544,8 @@ namespace DuelLinksAccess
                 // Read the "entrys" string array from ViewController.Args
                 if (entryIndex >= 0)
                 {
+                    string gateLabel = TryGateSwitchLabel(go, pullDownVc, entryIndex);
+                    if (gateLabel != null) return gateLabel;
                     try
                     {
                         var args = pullDownVc.Args;
@@ -562,7 +584,34 @@ namespace DuelLinksAccess
         /// Extracts a string at a given index from an IL2CPP object that represents
         /// a string array. Tries multiple cast approaches since IL2CPP wrapping varies.
         /// </summary>
-        private static string ExtractStringFromArray(Il2CppSystem.Object obj, int index)
+        private static string TryGateSwitchLabel(GameObject go,
+            Il2CppYgomGame.Menu.PullDownViewController vc, int index)
+        {
+            try
+            {
+                var managers = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+                if (managers == null || !managers.TryGetValue("content", out var manager)
+                    || manager?.GetStackTopViewController()?.gameObject?.name != "Gate"
+                    || vc.Args == null || !vc.Args.TryGetValue("icons", out var nativeIcons)
+                    || nativeIcons == null) return null;
+                string path = ExtractStringFromArray(nativeIcons, index);
+                if (!GateSwitchPolicy.IsGateIcon(path)) return null;
+                string series = GateSwitchPolicy.Series(path);
+                string label = series == "EVENT" ? Loc.Get("gate_switch_event")
+                    : series != null ? Loc.Get("gate_switch_series", series) : Loc.Get("gate_switch_unknown");
+                // The visible checkmark is authoritative; raw boxed Args
+                // integer/bool ToString values are unreliable in this game.
+                bool selected = go.GetComponentsInChildren<UnityEngine.UI.Image>(true)
+                    .Any(i => i != null && i.gameObject.activeInHierarchy && i.gameObject.name == "Check"
+                        && i.sprite != null && i.sprite.name == "GUI_T_ComCheckmark2");
+                if (selected) label = Loc.Get("deck_auto_selected", label);
+                DebugLogger.Log(LogCategory.Handler, "GateSwitch", $"index={index} icon={path} label={label}");
+                return label;
+            }
+            catch { return null; }
+        }
+
+        internal static string ExtractStringFromArray(Il2CppSystem.Object obj, int index)
         {
             // Approach 1: Il2CppStringArray (native string array)
             try
@@ -887,6 +936,28 @@ namespace DuelLinksAccess
         /// Checks common name keys (title, name, headline, summary).
         /// In debug mode, dumps the full data dictionary for unknown items.
         /// </summary>
+        internal static string ArenaBannerName(string path)
+        {
+            if (!ArenaMenuPolicy.IsBannerPath(path)) return null;
+            string banner = path + ".data.banner";
+            string rank = Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(banner + ".duel.rank", "");
+            int rule = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(banner + ".duel.rule", -1);
+            string description = Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(banner + ".text", "");
+            bool characterDeck = false;
+            var footer = Il2CppYgomSystem.Utility.ClientWork.getDictionaryByJsonPath(path + ".footer", null);
+            if (footer != null) characterDeck = footer.ContainsKey("角色牌組對戰詳情");
+            string key = ArenaMenuPolicy.TitleKey(description, rule, rank, characterDeck);
+            if (key != null) return Loc.Get(key);
+            // Only explicit title/name fields qualify as a native title.
+            // `text` is a subtitle, and must not mask an unidentified image title.
+            foreach (string field in new[] { "title", "name" })
+            {
+                string name = StripRichText(Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(banner + "." + field, ""));
+                if (!string.IsNullOrWhiteSpace(name)) return name;
+            }
+            return null;
+        }
+
         private static string TryClientWorkName(string dataPath, string goName)
         {
             // Debug: dump keys when in debug mode (helps discover new data fields)

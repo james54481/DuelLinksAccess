@@ -68,6 +68,8 @@ namespace DuelLinksAccess
         // matches the intended item — and abort rather than ever trade the
         // wrong one. The carousel snap can drift for a few frames, so we watch
         // for the match instead of confirming after a fixed delay.
+        private bool _presentationSeen;
+        private float _presentationAdvanceAfter;
         private bool _tradePollActive;
         private float _tradePollTimer;
         private const float TradePollTimeout = 1.0f;
@@ -100,9 +102,6 @@ namespace DuelLinksAccess
                     LogPostTradeVcState();
             }
 
-            if (_tradePollActive)
-                PollTradeSelection();
-
             var vc = TryGetTraderVC();
             if (vc == null)
             {
@@ -113,6 +112,10 @@ namespace DuelLinksAccess
             string goName = vc.gameObject?.name ?? "";
             if (!_wasActive || goName != _lastVcGoName)
                 Activate(vc, goName);
+
+            if (ChronicleReceiptFlow.Handle(vc)) { CancelTradePoll(); return; }
+            if (HandleResultPresentation(vc)) return;
+            if (_tradePollActive) PollTradeSelection();
 
             if (!_scanDone)
             {
@@ -126,6 +129,62 @@ namespace DuelLinksAccess
         }
 
         #endregion
+
+        private bool HandleResultPresentation(CardTraderViewController2 vc)
+        {
+            try
+            {
+                bool background = vc.thanksBg?.activeInHierarchy == true;
+                bool item = vc.thanksItem?.activeInHierarchy == true;
+                bool card = vc.tempCardPict?.gameObject?.activeInHierarchy == true;
+                string mode = CardTraderViewController2.currentMode.ToString();
+                if (!TraderPresentationPolicy.IsPresentation(mode, background, item, card))
+                {
+                    _presentationSeen = false;
+                    return false;
+                }
+                CancelTradePoll();
+                if (!_presentationSeen)
+                {
+                    _presentationSeen = true;
+                    MelonLoader.MelonLogger.Msg($"[TraderPresentation] mode={mode} bg={background} item={item} card={card}");
+                    ScreenReader.Say(Loc.Get(background || item ? "trader_result_presentation" : "trader_result_wait"));
+                }
+                // Native receipt dialog has priority in Main. While this effect is
+                // visible, do not navigate, refresh costs, trade, or leave the shop.
+                bool advance = InputManager.TryConsumeKeyDown(KeyCode.Return)
+                    || InputManager.TryConsumeKeyDown(KeyCode.KeypadEnter)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Space)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Escape)
+                    || InputManager.TryConsumeKeyDown(KeyCode.Backspace);
+                if (advance && Time.unscaledTime >= _presentationAdvanceAfter)
+                {
+                    if (TraderPresentationPolicy.CanAdvance(background, item, card))
+                    {
+                        _presentationAdvanceAfter = Time.unscaledTime + 0.75f;
+                        vc.SendBack(); // Same native route as the verified Escape transition.
+                        MelonLoader.MelonLogger.Msg("[TraderPresentation] Requested native back to reveal receipt");
+                    }
+                    else ScreenReader.Say(Loc.Get("trader_result_wait"));
+                }
+                else if (InputManager.TryConsumeKeyDown(KeyCode.Tab)
+                    || InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow)
+                    || InputManager.TryConsumeKeyDownOrRepeat(KeyCode.DownArrow)
+                    || InputManager.TryConsumeKeyDownOrRepeat(KeyCode.LeftArrow)
+                    || InputManager.TryConsumeKeyDownOrRepeat(KeyCode.RightArrow))
+                    ScreenReader.Say(Loc.Get(background || item ? "trader_result_presentation" : "trader_result_wait"));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_presentationSeen)
+                {
+                    DebugLogger.Log(LogCategory.Handler, "TraderPresentation", ex.Message);
+                    return true; // Keep underlying trade commands blocked after an uncertain transition.
+                }
+                return false;
+            }
+        }
 
         #region Lifecycle
 
@@ -142,6 +201,7 @@ namespace DuelLinksAccess
             _footerDumped = false;
             _footerTabs.Clear();
             _postTradeVcCheckDelay = 0f;
+            _presentationSeen = false;
             CancelTradePoll();
 
             ScreenReader.Say(Loc.Get("trader_entered"));
@@ -159,6 +219,7 @@ namespace DuelLinksAccess
             _footerDumped = false;
             _footerTabs.Clear();
             _postTradeVcCheckDelay = 0f;
+            _presentationSeen = false;
             CancelTradePoll();
 
             DebugLogger.Log(LogCategory.Handler, "CardTrader", "Deactivated");
@@ -823,6 +884,25 @@ namespace DuelLinksAccess
                 if (!SameTradeOffer(_vc.getCurrentItem(), live))
                 {
                     ScreenReader.Say(Loc.Get("trader_select_failed", name));
+                    return;
+                }
+                if (live.itemType == CardTraderInfoBase.Type.BoxChip)
+                {
+                    // Native BOX chip entry opens CardGetter(mode=BoxChip) before any
+                    // final transaction. A generic exchange dialog skips that picker.
+                    var button = _vc.exchangeButton;
+                    bool ready = TradeExecutionPolicy.CanOpenBoxChipPicker(
+                        SameTradeOffer(_vc.getCurrentItem(), live),
+                        button?.gameObject?.activeInHierarchy == true,
+                        button?.IsInteractable() == true);
+                    MelonLoader.MelonLogger.Msg($"[BoxChipEntry] native picker ready={ready} item={live.itemId}");
+                    if (!ready)
+                    {
+                        ScreenReader.Say(Loc.Get("trader_cannot_trade"));
+                        return; // Never fall back to a generic purchase dialog.
+                    }
+                    _vc.OnClickExchange();
+                    _postTradeVcCheckDelay = 1.0f;
                     return;
                 }
                 DebugLogger.Log(LogCategory.Handler, "CardTrader",

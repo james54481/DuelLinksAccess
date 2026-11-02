@@ -17,7 +17,7 @@ using System.Collections;
 //   See docs/technical-reference.md section "CRITICAL: Accessing Game Code"
 // ============================================================================
 
-[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.4", "DuelLinksAccess Team")]
+[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.5", "DuelLinksAccess Team")]
 [assembly: MelonGame("Konami Digital Entertainment Co., Ltd.", "Yu-Gi-Oh! DUEL LINKS")]
 
 namespace DuelLinksAccess
@@ -307,6 +307,8 @@ namespace DuelLinksAccess
             // Key consumption via InputManager prevents conflicts with other handlers.
             _duelHandler?.Update();
             if (_duelHandler?.IsConfirmationActive == true) return;
+
+            ChronicleReceiptFlow.Observe();
 
             // Dialog handler — also handles duel dialogs (Yes/No, effect selection)
             _dialogHandler?.Update();

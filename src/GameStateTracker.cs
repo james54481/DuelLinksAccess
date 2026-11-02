@@ -445,7 +445,7 @@ namespace DuelLinksAccess
                 GameScreen.Home => "screen_home",
                 GameScreen.Title => "screen_title",
                 GameScreen.Duel => null, // Handled by DuelEventAnnouncer
-                GameScreen.Deck => "screen_deck",
+                GameScreen.Deck => DeckViewLabelPolicy.ScreenKey(LastViewControllerName) ?? "screen_deck",
                 GameScreen.Shop => "screen_shop",
                 GameScreen.Dialog => "screen_dialog",
                 GameScreen.CardDetail => "screen_card_detail",

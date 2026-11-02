@@ -155,6 +155,7 @@ namespace DuelLinksAccess
 
             _awaitingExchangeResult = false;
             _exchangeDialogSeen = false;
+            _confirmFocused = false;
 
             int previousMrk = (_cardIds.Count > 0 && _focusIndex >= 0 && _focusIndex < _cardIds.Count)
                 ? _cardIds[_focusIndex] : -1;
@@ -269,40 +270,26 @@ namespace DuelLinksAccess
             {
                 if (_vc == null) return;
 
-                // Fallback: try exchangeList (List<CardAndRarity>) — keep the
-                // real Kirarity so the exchange submits the exact card.
-                var carList = _vc.exchangeList;
-                if (carList != null && carList.Count > 0)
+                string mode = GetModeName();
+                var choices = _vc.choiceList;
+                var exchanges = _vc.exchangeList;
+                var source = TicketBrowseSourcePolicy.Choose(mode, choices?.Count ?? 0, exchanges?.Count ?? 0);
+                var cards = source == TicketBrowseSource.Choice ? choices
+                    : source == TicketBrowseSource.Exchange ? exchanges : null;
+                if (cards != null && cards.Count > 0)
                 {
-                    for (int i = 0; i < carList.Count; i++)
+                    foreach (var card in cards)
                     {
-                        var car = carList[i];
-                        _cardIds.Add(car.Mrk);
-                        _cardKirarities.Add(car.Kirarity);
+                        _cardIds.Add(card.Mrk);
+                        _cardKirarities.Add(card.Kirarity);
                         _hasCardIdentity.Add(true);
                     }
-
                     DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        $"Loaded {_cardIds.Count} cards from exchangeList");
+                        $"Loaded {_cardIds.Count} cards from {source} mode={mode}; choices={choices?.Count} exchange={exchanges?.Count}");
                     return;
                 }
-
-                // Another fallback: try choiceList (List<CardAndRarity>).
-                var choiceList = _vc.choiceList;
-                if (choiceList != null && choiceList.Count > 0)
-                {
-                    for (int i = 0; i < choiceList.Count; i++)
-                    {
-                        var car = choiceList[i];
-                        _cardIds.Add(car.Mrk);
-                        _cardKirarities.Add(car.Kirarity);
-                        _hasCardIdentity.Add(true);
-                    }
-
-                    DebugLogger.Log(LogCategory.Handler, "TicketExchange",
-                        $"Loaded {_cardIds.Count} cards from choiceList");
-                    return;
-                }
+                // An empty BoxChip catalogue must not expose pending or consumed selections.
+                if (mode == "BoxChip") return;
                 // IDs alone are readable, but not safe exchange payloads.
                 var ids = _vc.cardExchangeList;
                 if (ids != null)

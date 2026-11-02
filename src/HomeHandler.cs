@@ -41,6 +41,7 @@ namespace DuelLinksAccess
         {
             public string Label;
             public Action Activate;
+            public Func<string> LiveLabel;
             public bool IsAreaSelector;
             public bool IsCharaSelector;
 
@@ -519,12 +520,16 @@ namespace DuelLinksAccess
             // Footer destination buttons. Try the known path first, then a
             // typed-name fallback within the SingleVC subtree — survives layer
             // renames between game patches.
-            bool gateOnMap = HasActiveMapObjectOfType<GateTouchObject>()
-                || HasActiveMapObjectOfType<GateTouchObjectDSOD>();
-            if (!gateOnMap)
-                AddButton(view.gameObject,
-                    "Layer4/SingleFooter/AreaButtons/Gate/YgomButton",
-                    "Gate", Loc.Get("home_gate"));
+            // GateTouchObject is a scenery/reward effect, not the Gate
+            // destination. The native footer handles both moving to its
+            // area and opening the Gate when already there.
+            AddButtonByName(view.gameObject, "Gate", Loc.Get("home_gate"), () =>
+            {
+                if (view == null || view.gameObject == null || !view.gameObject.activeInHierarchy
+                    || FindActiveViewController<SingleViewController>() != view) return;
+                DebugLogger.Log(LogCategory.Handler, "Home", "Gate: native SingleViewController.OnGateButton");
+                view.OnGateButton();
+            });
 
             AddButton(view.gameObject,
                 "Layer4/SingleFooter/AreaButtons/Colosseum/YgomButton",
@@ -877,8 +882,6 @@ namespace DuelLinksAccess
             // surface NPCs from other neighborhoods.
             AddMapObjects<BillboardObject>(area);
             // Permanent destinations (no area filter — only one of each)
-            AddMapObjects<GateTouchObject>(null);
-            AddMapObjects<GateTouchObjectDSOD>(null);
             AddMapObjects<ShopObject>(null);
             AddMapObjects<SchoolObject>(null);
             AddMapObjects<DuelCenterObject>(null);
@@ -1056,6 +1059,10 @@ namespace DuelLinksAccess
                 });
             }
 
+            foreach (var reward in HomeLevelRewards.Read(view.gameObject))
+                _items.Add(new HomeItem { Go = reward.Go, Label = reward.Label, LiveLabel = reward.LiveLabel,
+                    Activate = reward.Activate ?? (() => ScreenReader.Say(reward.Label)) });
+
             // Deck panel
             var deckRoot = view.gameObject.transform.Find(
                 "StatePanelBase/HomeDeckPanel(Clone)/DeckIconBg");
@@ -1146,7 +1153,7 @@ namespace DuelLinksAccess
                 || gameLabel == "Button"
                 || gameLabel == LabelExtractor.CleanGoName(btn.gameObject.name)
                 || ContainsJapanese(gameLabel);
-            string label = junk ? fallbackLabel : gameLabel;
+            string label = fallbackGoName == "SelectChara" ? fallbackLabel : junk ? fallbackLabel : gameLabel;
 
             var captured = btn;
             _items.Add(new HomeItem
@@ -1605,7 +1612,7 @@ namespace DuelLinksAccess
         /// "Event object" fallback). Extend with patterns from the
         /// "[Home] Unmapped billboard" log lines.
         /// </summary>
-        private static string TryGetEventBillboardLabel(string res, string url)
+        internal static string TryGetEventBillboardLabel(string res, string url)
         {
             // Mark texture names identify the event family. Match only the
             // file segment — the parent folder ("RankIcon/...") is shared
@@ -1615,6 +1622,18 @@ namespace DuelLinksAccess
             {
                 int slash = res.LastIndexOf('/');
                 resFile = slash >= 0 ? res.Substring(slash + 1) : res;
+            }
+
+            // Activity item billboard: read the game's item name rather than
+            // expose MapObjectRoot or infer a character from the gold frame.
+            if (url != null && url.IndexOf("Ev.add_trigger_item", StringComparison.Ordinal) >= 0)
+            {
+                int? itemId = GateCostPolicy.ItemId(resFile);
+                if (itemId.HasValue)
+                {
+                    string itemName = LabelExtractor.StripRichText(Il2CppYgomGame.Utility.ItemUtil.GetName(itemId.Value));
+                    if (!string.IsNullOrWhiteSpace(itemName)) return Loc.Get("home_event_item", itemName);
+                }
             }
 
             // Verified 2026-07-17: SingleCharaMark_Pvp0001 opened the
@@ -1887,7 +1906,7 @@ namespace DuelLinksAccess
             if (_items.Count == 0) return;
             var item = _items[_focusIndex];
             ScreenReader.Say(Loc.Get("home_item",
-                _focusIndex + 1, _items.Count, item.Label));
+                _focusIndex + 1, _items.Count, item.LiveLabel?.Invoke() ?? item.Label));
         }
 
         private static void AnnounceGemBalance()

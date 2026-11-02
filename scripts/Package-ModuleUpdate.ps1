@@ -18,7 +18,7 @@ DuelLinksAccess 繁體中文維護版 $version
 
 本套件只供已安裝 DuelLinksAccess 的使用者更新，不含首次安裝所需元件。
 先完全關閉 Duel Links 並備份現有 DLL，再將 Mods/DuelLinksAccess.dll 放入遊戲的 Mods 資料夾。
-也可使用獨立更新程式自動下載、驗證、備份與替換 DLL。
+也可使用獨立更新程式手動檢查更新，確認後下載、驗證、備份與替換 DLL。
 首次安裝與更新程式說明：https://github.com/james54481/DuelLinksAccess/tree/zh-tw
 上游作者與授權見 LICENSE.txt，修改說明見 CHANGELOG.zh-TW.md。
 "@
