@@ -31,7 +31,8 @@ namespace DuelLinksAccess
         private float _arenaStableAt;
         private bool _arenaRefreshing;
         private int _noticeReadAttempts;
-        private string _noticeBeforeActivation = "";
+        private GameObject _noticeAnchor;
+        private List<string> _noticeBeforeActivation = new List<string>();
         private string _lastVcName = "";
         private bool _scanned;
         private float _scanDelay;
@@ -276,12 +277,13 @@ namespace DuelLinksAccess
                 }
             }
 
+            AccessibleTextEditor.Poll();
             PollArenaMenu();
-            if (_noticeReadDelay >= 0f && !IsNoticePage()) _noticeReadDelay = -1f;
+            if (_noticeReadDelay >= 0f && (_noticeAnchor == null || !_noticeAnchor.activeInHierarchy)) _noticeReadDelay = -1f;
 
             // In text mode, poll for text changes to auto-read new dialogue
             if (IsResultPage) PollResultPage();
-            else if (_textMode) PollTextChanges();
+            else if (!PollDownloadContinue() && _textMode) PollTextChanges();
 
             // Delayed rescan for result screens (after NEXT button animations)
             if (_resultRescanTimer > 0f)
@@ -314,12 +316,24 @@ namespace DuelLinksAccess
                 _noticeReadDelay -= Time.unscaledDeltaTime;
                 if (_noticeReadDelay <= 0f)
                 {
-                    string body = AccessibleUiText.Read(GetActiveScreenRoot());
-                    if (!string.IsNullOrWhiteSpace(body) && body != _noticeBeforeActivation)
+                    var root = GetActiveScreenRoot();
+                    var paragraphs = AccessibleUiText.ReadParts(root);
+                    if (!paragraphs.SequenceEqual(_noticeBeforeActivation))
                     {
-                        ScreenReader.Say(body);
+                        var previous = new HashSet<string>(_noticeBeforeActivation);
+                        var added = paragraphs.Where(previous.Add).ToList();
+                        _items.RemoveAll(item => item.Type == ItemType.Information && item.Go == root);
+                        int anchor = _items.FindIndex(item => item.Go == _noticeAnchor);
+                        if (anchor >= 0)
+                        {
+                            _focusIndex = anchor;
+                            _items.InsertRange(anchor + 1, added.Select(part => new ScreenItem
+                            {
+                                Go = root, Label = part, Type = ItemType.Information
+                            }));
+                        }
+                        ScreenReader.Say(Loc.Get(added.Count > 0 ? "notice_expanded" : "notice_collapsed"));
                         _noticeReadDelay = -1f;
-                        _tabRescanDelay = 0.1f;
                     }
                     else if (++_noticeReadAttempts >= 6)
                     {
@@ -499,6 +513,10 @@ namespace DuelLinksAccess
 
                 // Post-process: remove duplicates and junk
                 DeduplicateItems();
+                AddFriendControls(_screenRoot);
+                AddKcProgress(_screenRoot);
+                AddGuideBingoItems(_screenRoot);
+                bool playerProfile = AddPlayerProfileStatistics(_screenRoot);
                 _items.RemoveAll(i => HomeBannerAccessibility.Redundant(_screenRoot, i.Go));
                 // The series icon and ChangeButton open the same native menu.
                 // Keep the named button; retain the icon if that button is absent.
@@ -611,7 +629,7 @@ namespace DuelLinksAccess
                     // Htjson pages often have explanatory text alongside buttons
                     // (e.g. Duel Trials quiz descriptions, hint text). Capture it
                     // so T can re-read it, and announce on entry.
-                    if (_screenRoot.name == "HtjsonPage" || _screenRoot.name == "TutorialArrowPart")
+                    if (!playerProfile && (_screenRoot.name == "HtjsonPage" || _screenRoot.name == "TutorialArrowPart"))
                     {
                         string pageText = ReadScreenText(_screenRoot);
                         if (!string.IsNullOrEmpty(pageText))
@@ -827,9 +845,16 @@ namespace DuelLinksAccess
             return ResultPagePolicy.Compose(values);
         }
 
+        private static readonly HashSet<string> LoggedResultRewardRows = new();
+        private static int _resultRewardRootId;
         private static ResultRewardCatalog ReadResultRewards(GameObject root)
         {
             var catalog = new ResultRewardCatalog();
+            if (_resultRewardRootId != root.GetInstanceID())
+            {
+                _resultRewardRootId = root.GetInstanceID();
+                LoggedResultRewardRows.Clear();
+            }
             foreach (var node in root.GetComponentsInChildren<Il2CppYgomSystem.Htjson.HtjsonNode>(true))
             {
                 if (node == null || !node.gameObject.activeInHierarchy) continue;
@@ -837,15 +862,33 @@ namespace DuelLinksAccess
                 {
                     var data = node.replaceParam;
                     if (data == null || !data.TryGetValue("%boxpath%", out var path)
-                        || !data.TryGetValue("%itemtype%", out var type)
-                        || !data.TryGetValue("%itemid%", out var id)
-                        || !data.TryGetValue("%itemnum%", out var count)
-                        || !int.TryParse(id?.ToString(), out int iid)
-                        || !int.TryParse(count?.ToString(), out int quantity)) continue;
-                    catalog.Add(path?.ToString(), type?.ToString(), iid, quantity,
-                        itemId => Il2CppYgomGame.Utility.ItemUtil.GetName(itemId), Loc.Get("shop_unknown_item"));
+                        || !data.TryGetValue("%itemtype%", out var type)) continue;
+                    data.TryGetValue("%itemid%", out var id);
+                    data.TryGetValue("%itemnum%", out var count);
+                    string rowPath = path?.ToString();
+                    string kind = type?.ToString();
+                    bool hasCount = int.TryParse(count?.ToString(), out int quantity);
+                    string bindingTrace = $"{rowPath}:type={kind}:id={id}:count={count}:parsed={hasCount}";
+                    if (Main.DebugMode && LoggedResultRewardRows.Add(bindingTrace))
+                        DebugLogger.Log(LogCategory.Handler, "ResultRewards", bindingTrace);
+                    if (kind == "card")
+                    {
+                        // Card IDs come from the loaded native card widget, never
+                        // from a screenshot, reward pool, or an encoded item ID.
+                        var cards = node.GetComponentsInChildren<Il2CppYgomGame.Htjson.CardWidget>(false)
+                            .Where(card => card != null && card.loaded && card.iid.GetCategory().ToString() == "CARD")
+                            .Select(card => card.iid.GetMrk()).Where(mrk => mrk > 0).Distinct().ToArray();
+                        if (hasCount && cards.Length == 1)
+                            catalog.AddCard(rowPath, cards[0], quantity, CardFormatter.GetName, Loc.Get("duel_unknown_card"));
+                        string trace = $"{root.GetInstanceID()}:{rowPath}:card:{quantity}:{string.Join(",", cards)}";
+                        if (Main.DebugMode && LoggedResultRewardRows.Add(trace))
+                            DebugLogger.Log(LogCategory.Handler, "ResultRewards", trace);
+                    }
+                    else if (hasCount && int.TryParse(id?.ToString(), out int iid))
+                        catalog.Add(rowPath, kind, iid, quantity,
+                            itemId => Il2CppYgomGame.Utility.ItemUtil.GetName(itemId), Loc.Get("shop_unknown_item"));
                 }
-                catch { /* Keep the native quantity text when row data is unavailable. */ }
+                catch { /* Preserve native text when reward identity is unavailable. */ }
             }
             return catalog;
         }
@@ -1239,6 +1282,48 @@ namespace DuelLinksAccess
         /// Polls for text changes on the current screen root.
         /// When text changes (new dialogue line), auto-reads it.
         /// </summary>
+        private GameObject _downloadContinueTarget;
+
+        private bool PollDownloadContinue()
+        {
+            if (_screenRoot == null || _screenRoot.name != "Download")
+            {
+                _downloadContinueTarget = null;
+                return false;
+            }
+
+            var view = _screenRoot.GetComponent<Il2CppYgomGame.Menu.DownloadViewController>();
+            var target = view?.skipButton;
+            if (!CanContinueDownload(view, target)) return false;
+
+            if (_downloadContinueTarget == target && _items.Any(item => item.Go == target)) return true;
+            bool announce = _downloadContinueTarget != target;
+            _downloadContinueTarget = target;
+            _items.RemoveAll(item => item.Go == target);
+            _items.Insert(0, new ScreenItem
+            {
+                Go = target,
+                Label = Loc.Get("download_continue"),
+                Type = ItemType.Button,
+                NativeAction = () =>
+                {
+                    if (_screenRoot == view.gameObject && CanContinueDownload(view, target))
+                        view.OnSkip();
+                }
+            });
+            _focusIndex = 0;
+            _textMode = false;
+            if (announce) ScreenReader.Say(Loc.Get("download_continue"));
+            return true;
+        }
+
+        private static bool CanContinueDownload(Il2CppYgomGame.Menu.DownloadViewController view, GameObject target)
+        {
+            return view != null && target != null && target.activeInHierarchy
+                && view.finishDownload && view.successDownload
+                && target.GetComponentInChildren<Selectable>(false)?.IsInteractable() != false;
+        }
+
         private void PollTextChanges()
         {
             if (_screenRoot == null) return;
@@ -1308,6 +1393,198 @@ namespace DuelLinksAccess
         /// Reads all visible text from a screen hierarchy.
         /// Returns combined text from all active Text/YgomTextAccessor components.
         /// </summary>
+        private void AddFriendControls(GameObject root)
+        {
+            if (root.name != "Friend") return;
+            var view = root.GetComponent<Il2CppYgomGame.Menu.FriendViewController>();
+            if (view == null) return;
+
+            var input = view.searchString;
+            if (input != null && input.gameObject.activeInHierarchy)
+            {
+                var item = _items.FirstOrDefault(entry => entry.Go == input.gameObject);
+                if (item != null)
+                    item.NativeAction = () => AccessibleTextEditor.Open(input, false, () => root == _screenRoot, () => _tabRescanDelay = 0.25f);
+            }
+
+            foreach (var item in _items)
+            {
+                if (item.Go == null) continue;
+                if (item.Go.name == "BackButton") item.Label = Loc.Get("screen_back");
+                if (item.Go.name == "HomeButton") item.Label = Loc.Get("deck_view_home");
+            }
+
+            var tabs = new[] { view.friendListView, view.friendAcceptView, view.friendSearchView };
+            var labels = new[] { Loc.Get("friend_tab_0"), Loc.Get("friend_tab_1"), Loc.Get("friend_tab_2") };
+            for (int index = 0; index < tabs.Length; index++)
+            {
+                int tabIndex = index;
+                var body = tabs[index];
+                string label = labels[index];
+                if (body != null && body.gameObject.activeInHierarchy)
+                    label = Loc.Get("friend_tab_selected", label);
+                _items.Insert(index, new ScreenItem
+                {
+                    Go = root,
+                    Label = label,
+                    Type = ItemType.Button,
+                    NativeAction = () =>
+                    {
+                        if (root != _screenRoot || view == null) return;
+                        view.OnTabChange(tabIndex);
+                        ScreenReader.Say(Loc.Get("friend_tab_selected", labels[tabIndex]));
+                        _tabRescanDelay = 0.25f;
+                    }
+                });
+            }
+        }
+
+        private bool AddPlayerProfileStatistics(GameObject root)
+        {
+            if (root.name != "HtjsonPage"
+                || !_items.Any(item => item.Label == "決鬥者ID" || item.Label == "Duelist ID"))
+                return false;
+
+            var nodes = root.GetComponentsInChildren<Il2CppYgomSystem.Htjson.HtjsonNode>(false);
+            if (!nodes.Any(node => node.replaceParam != null
+                && node.replaceParam.TryGetValue("%basepath%", out var path)
+                && path?.ToString() == "User"))
+                return false;
+
+            var rankItems = new List<ScreenItem>();
+            var images = root.GetComponentsInChildren<Image>(false);
+            foreach (var image in images)
+            {
+                string mode = image.sprite?.name switch
+                {
+                    "GUI_T_RuleIcon3_1" => Loc.Get("profile_speed"),
+                    "GUI_T_RuleIcon3_2" => Loc.Get("profile_rush"),
+                    _ => null
+                };
+                if (mode == null) continue;
+                string rank = AccessibleUiText.Read(image.transform.parent?.gameObject);
+                if (!string.IsNullOrWhiteSpace(rank))
+                    rankItems.Add(new ScreenItem { Go = image.gameObject,
+                        Label = Loc.Get("profile_current_rank", mode, rank), Type = ItemType.Information });
+            }
+
+            var history = images.Where(image => image.sprite?.name.StartsWith("RankIcon", StringComparison.Ordinal) == true)
+                .GroupBy(image => image.transform.parent.GetInstanceID())
+                .Where(group => group.Count() == 5)
+                .OrderByDescending(group => group.First().transform.position.y).ToArray();
+            if (history.Length == 2)
+            {
+                for (int index = 0; index < history.Length; index++)
+                {
+                    var group = history[index].OrderBy(image => image.transform.position.x).ToArray();
+                    string mode = Loc.Get(index == 0 ? "profile_speed" : "profile_rush");
+                    var ranks = group.Select(image => Loc.Get(image.sprite.name switch
+                    {
+                        "RankIcon_Rookie" or "RankIcon2_Rookie" => "profile_rank_rookie",
+                        "RankIcon_Bronze" or "RankIcon2_Bronze" => "profile_rank_bronze",
+                        "RankIcon_NoData" => "profile_rank_empty",
+                        _ => "profile_rank_unknown"
+                    }));
+                    rankItems.Add(new ScreenItem { Go = group[0].gameObject,
+                        Label = Loc.Get("profile_rank_history", mode, string.Join("、", ranks)),
+                        Type = ItemType.Information });
+                }
+            }
+
+            var pencils = root.GetComponentsInChildren<Image>(false)
+                .Where(img => img.sprite?.name == "GUI_T_ComIcon7_2").ToArray();
+            if (pencils.Length == 1)
+            {
+                var pencil = pencils[0];
+                _items.Insert(0, new ScreenItem
+                {
+                    Go = pencil.gameObject,
+                    Label = Loc.Get("profile_edit_name"),
+                    Type = ItemType.Button,
+                    NativeAction = () => ActivateProfilePencil(root, pencil)
+                });
+            }
+
+            var seen = new HashSet<int>();
+            var rows = new List<ScreenItem>();
+            foreach (var text in root.GetComponentsInChildren<Text>(false))
+            {
+                string value = LabelExtractor.StripRichText(text.text)?.Trim();
+                if (string.IsNullOrEmpty(value) || !value.All(c => char.IsDigit(c) || c == ',')
+                    || !value.Any(char.IsDigit))
+                    continue;
+
+                for (var row = text.transform.parent; row != null && row != root.transform; row = row.parent)
+                {
+                    var parts = AccessibleUiText.ReadParts(row.gameObject).Distinct().ToList();
+                    if (parts.Count > 2) break;
+                    if (parts.Count != 2 || parts[1] != value || !parts[0].Any(char.IsLetter)) continue;
+                    if (seen.Add(row.gameObject.GetInstanceID()))
+                        rows.Add(new ScreenItem
+                        {
+                            Go = row.gameObject,
+                            Label = $"{parts[0]}，{value}",
+                            Type = ItemType.Information
+                        });
+                    break;
+                }
+            }
+            var editButtons = _items.Where(item => item.Go != null && item.Go.name == "div" && item.Label == "Button").ToList();
+            if (editButtons.Count == 1) editButtons[0].Label = Loc.Get("profile_change_icon");
+
+            if (rows.Count == 0) return false;
+
+            _items.RemoveAll(item => item.Go != null && item.Go.name == "Scrollbar");
+            foreach (var item in _items)
+                if (item.Go != null && item.Go.name == "BackButton") item.Label = Loc.Get("screen_back");
+            var headings = root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(false)
+                .Select(text => (text.transform, text.text))
+                .Concat(root.GetComponentsInChildren<Text>(false).Select(text => (text.transform, text.text)))
+                .Where(entry => (entry.text.StartsWith("[SPEED]", StringComparison.Ordinal)
+                    || entry.text.StartsWith("[RUSH]", StringComparison.Ordinal))
+                    && !entry.text.Contains("過去5賽季")
+                    && !entry.text.Contains("Past 5", StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(entry => entry.transform.position.y).ToArray();
+            foreach (var row in rows)
+            {
+                var heading = headings.LastOrDefault(entry => entry.transform.position.y > row.Go.transform.position.y);
+                string mode = heading.text == null ? Loc.Get("profile_all")
+                    : Loc.Get(heading.text.StartsWith("[SPEED]", StringComparison.Ordinal) ? "profile_speed" : "profile_rush");
+                row.Label = $"{mode}，{row.Label}";
+            }
+            _items.InsertRange(0, rankItems.Concat(rows));
+            _lastReadText = string.Join(". ", rankItems.Concat(rows).Select(row => row.Label));
+            return true;
+        }
+
+        private void ActivateProfilePencil(GameObject root, Image pencil)
+        {
+            if (root == null || root != _screenRoot || pencil == null
+                || !pencil.gameObject.activeInHierarchy || pencil.sprite?.name != "GUI_T_ComIcon7_2")
+                return;
+
+            var system = UnityEngine.EventSystems.EventSystem.current;
+            if (system == null) return;
+            var canvas = pencil.canvas;
+            var camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay
+                ? canvas.worldCamera : null;
+            var data = new UnityEngine.EventSystems.PointerEventData(system)
+            {
+                position = RectTransformUtility.WorldToScreenPoint(camera,
+                    pencil.rectTransform.TransformPoint(pencil.rectTransform.rect.center)),
+                button = UnityEngine.EventSystems.PointerEventData.InputButton.Left
+            };
+            var hits = new Il2CppSystem.Collections.Generic.List<UnityEngine.EventSystems.RaycastResult>();
+            system.RaycastAll(data, hits);
+            if (hits.Count == 0) return;
+
+            var hit = hits[0];
+            if (hit.gameObject == null || !hit.gameObject.transform.IsChildOf(root.transform)) return;
+            data.pointerCurrentRaycast = hit;
+            UnityEngine.EventSystems.ExecuteEvents.ExecuteHierarchy(
+                hit.gameObject, data, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+        }
+
         private bool IsNoticePage()
         {
             try
@@ -1817,13 +2094,21 @@ namespace DuelLinksAccess
                     if (IsJunkHtjsonElement(go.name)) continue;
 
                     string label = LabelExtractor.GetLabel(go);
+                    if (_screenRoot?.name == "Title" && go.name == "PlayerIdNumber"
+                        && !(label ?? "").Any(char.IsDigit))
+                        label = Loc.Get("title_show_duelist_id");
+                    if (_lastVcName == "SkillTicketList")
+                    {
+                        if (go.name == "BackButton") label = Loc.Get("screen_back");
+                        if (go.name == "HomeButton") label = Loc.Get("deck_view_home");
+                    }
                     string gateKey = GateNavigationLabelPolicy.ButtonKey(_screenRoot?.name, go.name);
                     if (gateKey != null)
                         label = gateKey == "gate_change_style" ? Loc.Get(gateKey, label) : Loc.Get(gateKey);
                     string deckViewKey = DeckViewLabelPolicy.ButtonKey(_screenRoot?.name, go.name);
                     if (deckViewKey != null) label = Loc.Get(deckViewKey);
                     if (_screenRoot != null && _screenRoot.name == "PvpMainMenu")
-                        label = ArenaLabel(go, label);
+                        label = go.name == "BackButton" ? Loc.Get("screen_back") : ArenaLabel(go, label);
                     if (IsNoticePage())
                         label = AccessibleUiText.NoticeLabel(go, label);
 
@@ -1930,9 +2215,137 @@ namespace DuelLinksAccess
                 button != null && button.interactable && parent.activeInHierarchy, path?.ToString(), cardId);
         }
 
+        private void AddGuideBingoItems(GameObject root)
+        {
+            if (root.name != "DDGuide") return;
+            foreach (var item in _items)
+                if (item.Go != null && item.Go.name == "BackButton") item.Label = Loc.Get("screen_back");
+
+            var managers = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
+            if (managers == null || !managers.TryGetValue("content", out var manager) || manager == null) return;
+            int count = manager.GetStackCount();
+            if (count < 2) return;
+            var board = manager.GetStackViewController(count - 2)?.gameObject;
+            if (board == null || !board.activeInHierarchy) return;
+            var text = AccessibleUiText.ReadParts(board);
+            if (!text.Any(part => part.Contains("賓果卡", StringComparison.Ordinal)
+                || part.Contains("Bingo Sheet", StringComparison.OrdinalIgnoreCase))) return;
+
+            int before = _items.Count;
+            FindButtons(board);
+            _items.RemoveAll(item => item.Go != null && item.Go.name == "Scrollbar"
+                && item.Go.transform.IsChildOf(board.transform));
+            var labels = new HashSet<string>(_items.Select(item => RankedHistoryPolicy.Normalize(item.Label)), StringComparer.Ordinal);
+            LabelGuideBingoRows(board);
+            foreach (string part in text.Concat(AccessibleUiText.ReadParts(root)))
+            {
+                if (labels.Add(RankedHistoryPolicy.Normalize(part)))
+                    _items.Add(new ScreenItem { Go = board, Label = part, Type = ItemType.Information });
+            }
+            DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
+                $"Guide bingo: board={board.name}, original={before}, total={_items.Count}");
+        }
+
+        private void LabelGuideBingoRows(GameObject board)
+        {
+            string RowPath(GameObject go)
+            {
+                for (var node = go.transform; node != null && node.IsChildOf(board.transform); node = node.parent)
+                {
+                    var data = node.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>()?.replaceParam;
+                    if (data == null) continue;
+                    foreach (string key in new[] { "%datapath%", "%sublooppath%" })
+                        if (data.TryGetValue(key, out var value) && value != null
+                            && System.Text.RegularExpressions.Regex.IsMatch(value.ToString(),
+                                @"^Bingo\.data\.sheet\.[0-9]+\.(mission|reward)\.[0-9]+$"))
+                            return value.ToString();
+                }
+                return null;
+            }
+
+            var groups = _items.Where(item => item.Go != null && item.Go.transform.IsChildOf(board.transform))
+                .Select(item => (Item: item, Path: RowPath(item.Go)))
+                .Where(entry => entry.Path != null).GroupBy(entry => entry.Path).ToArray();
+            foreach (var group in groups)
+            {
+                var primary = group.FirstOrDefault(entry => entry.Item.Go.name == "ButtonSet").Item
+                    ?? group.First().Item;
+                foreach (var entry in group)
+                    if (entry.Item != primary) _items.Remove(entry.Item);
+
+                bool mission = group.Key.Contains(".mission.", StringComparison.Ordinal);
+                var path = mission ? group.Key + ".reward" : group.Key;
+                int id = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(path + ".id", -1);
+                int count = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(path + ".count", -1);
+                if (mission)
+                {
+                    string state = Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(group.Key + ".state", "");
+                    if (state == "on") primary.Label = Loc.Get("guide_bingo_claimable", primary.Label);
+                    if (state == "off") primary.Label = Loc.Get("guide_bingo_incomplete", primary.Label);
+                }
+                if (id <= 0 || count <= 0) continue;
+                string name = Il2CppYgomGame.Utility.ItemUtil.GetName(id);
+                if (!string.IsNullOrWhiteSpace(name))
+                    primary.Label = Loc.Get("guide_bingo_reward", primary.Label, name, count);
+            }
+        }
+
+        private static string KcStage(IEnumerable<string> sprites)
+        {
+            var names = new HashSet<string>(sprites, StringComparer.Ordinal);
+            return names.Contains("GUI_T_ModeSelect_TitleStage1")
+                && names.Contains("GUI_T_ModeSelect_LvPartsDLv") ? Loc.Get("kc_stage_one") : null;
+        }
+
+        private void AddKcProgress(GameObject root)
+        {
+            if (root.name != "PvpMainMenu") return;
+            var images = root.GetComponentsInChildren<Image>(false);
+            if (KcStage(images.Select(image => image.sprite?.name)) == null) return;
+            var levelIcon = images.FirstOrDefault(image => image.sprite?.name == "GUI_T_ModeSelect_LvPartsDLv");
+            var level = AccessibleUiText.ReadParts(levelIcon?.transform.parent?.gameObject)
+                .FirstOrDefault(part => System.Text.RegularExpressions.Regex.IsMatch(part, @"^(?:DLv\.\s*)?[0-9]{1,2}$"));
+            if (level != null)
+                _items.Insert(0, new ScreenItem { Go = levelIcon.gameObject,
+                    Label = Loc.Get("kc_current_level", level), Type = ItemType.Information });
+
+            if (!_items.Any(item => item.Label == "詳細資訊/獎勵" || item.Label == "Details/Rewards")) return;
+            string daily = AccessibleUiText.ReadParts(root).FirstOrDefault(part =>
+                (part.Contains("每天", StringComparison.Ordinal) || part.Contains("daily", StringComparison.OrdinalIgnoreCase))
+                && System.Text.RegularExpressions.Regex.IsMatch(part, @"[0-9]+\s*/\s*[0-9]+"));
+            if (daily != null)
+                _items.Insert(level == null ? 0 : 1, new ScreenItem { Go = root,
+                    Label = daily, Type = ItemType.Information });
+        }
+
         private string RankedHistoryLabel(GameObject go)
         {
             if (go.name != "duelist" && go.name != "DeckSelectItem2") return null;
+            if (go.name == "duelist")
+            {
+                for (var current = go.transform; current != null && current.IsChildOf(_screenRoot.transform);
+                    current = current.parent)
+                foreach (var node in current.GetComponents<Il2CppYgomSystem.Htjson.HtjsonNode>())
+                foreach (string key in new[] { "%datapath%", "%sublooppath%" })
+                {
+                    var binding = node?.replaceParam;
+                    if (binding != null && binding.TryGetValue(key, out var bound)
+                        && RankedHistoryPolicy.ListPath(bound?.ToString()) != null)
+                    {
+                        var row = Il2CppYgomSystem.Utility.ClientWork.getByJsonPath(bound.ToString())
+                            ?.TryCast<Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object>>();
+                        string ReadBound(string field) => row != null && row.TryGetValue(field, out var value)
+                            ? LabelExtractor.StripRichText(value?.ToString() ?? "") : "";
+                        string rank = ReadBound("rank");
+                        string name = ReadBound("uname");
+                        string time = ReadBound("time");
+                        if (rank.StartsWith("DLv.", StringComparison.Ordinal)
+                            && !string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(time))
+                            return Loc.Get("ranked_history_entry", Loc.Get("ranked_history_context",
+                                name, Loc.Get(RankedHistoryPolicy.ResultKey(ReadBound("result"))), time, rank));
+                    }
+                }
+            }
             Transform scope = null;
             // The duelist Selectable is itself the row container; the deck
             // control is nested inside it. Include self before walking parents.
@@ -2014,7 +2427,8 @@ namespace DuelLinksAccess
                             if (string.IsNullOrWhiteSpace(threshold)) threshold = Loc.Get("ranked_unknown_threshold");
                         }
                         DebugLogger.Log(LogCategory.Handler, "ArenaReward", $"{path}: item={id} count={count} threshold={threshold}");
-                        return Loc.Get(category == 0 ? "ranked_cumulative_reward" : "ranked_rank_reward", threshold, itemName, amount);
+                        return Loc.Get(category == 0 ? "ranked_cumulative_reward"
+                            : threshold.StartsWith("DLv.", StringComparison.Ordinal) ? "kc_level_reward" : "ranked_rank_reward", threshold, itemName, amount);
                     }
                     // Do not relabel historical match rows as page buttons.
                     return null;
@@ -2117,7 +2531,9 @@ namespace DuelLinksAccess
                     if (data == null || !data.TryGetValue("%basepath%", out var value)) continue;
                     string path = value?.ToString();
                     if (!ArenaMenuPolicy.IsBannerPath(path)) continue;
-                    string name = LabelExtractor.ArenaBannerName(path);
+                    string kcStage = KcStage(go.GetComponentsInChildren<Image>(false)
+                        .Select(image => image.sprite?.name));
+                    string name = kcStage ?? LabelExtractor.ArenaBannerName(path);
                     if (name == null)
                     {
                         string spriteKey = ArenaMenuPolicy.SpriteTitleKey(go.GetComponentsInChildren<Image>(true)
@@ -2133,6 +2549,7 @@ namespace DuelLinksAccess
                         return Loc.Get("arena_deck_preview", string.IsNullOrWhiteSpace(deckName)
                             ? Loc.Get("arena_unknown_deck") : deckName);
                     }
+                    if (kcStage != null) return kcStage;
                     if (Main.DebugMode && name == null)
                     {
                         var spriteNames = go.GetComponentsInChildren<Image>(true)
@@ -2616,9 +3033,10 @@ namespace DuelLinksAccess
             if (PurchaseAccessibility.Activate(item.Go)) return;
             if (TicketExchangeHandler.TryActivateConfirmControl(item.Go)) return;
 
-            if (IsNoticePage())
+            if (item.Go.name == "ac_btn_title" || (IsNoticePage() && (item.Go.name == "ButtonSet" || item.Go.name == "TextArea")))
             {
-                _noticeBeforeActivation = AccessibleUiText.Read(_screenRoot);
+                _noticeAnchor = item.Go;
+                _noticeBeforeActivation = AccessibleUiText.ReadParts(_screenRoot);
                 _noticeReadAttempts = 0;
                 _noticeReadDelay = 0.5f;
             }

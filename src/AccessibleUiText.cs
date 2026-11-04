@@ -5,15 +5,16 @@ namespace DuelLinksAccess
 {
  public static class AccessibleUiText
  {
-  public static string Read(GameObject root)
+  public static string Read(GameObject root) => AccessibleUiPolicy.CombineText(ReadParts(root));
+  public static List<string> ReadParts(GameObject root)
   {
-   if(root==null)return "";
-   var parts=new List<string>();
+   var parts = new List<string>();
+   if (root == null) return parts;
    try { foreach(var t in root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(true))
     if(t!=null && t.gameObject!=null && t.gameObject.activeInHierarchy)parts.Add(t.text); } catch { }
    try { foreach(var t in root.GetComponentsInChildren<Text>(true))
     if(t!=null && t.gameObject!=null && t.gameObject.activeInHierarchy)parts.Add(t.text); } catch { }
-   return AccessibleUiPolicy.CombineText(parts);
+   return parts.ConvertAll(text => LabelExtractor.StripRichText(text ?? "").Trim()).FindAll(text => text.Length > 0);
   }
   public static string NoticeLabel(GameObject go,string fallback)
   {

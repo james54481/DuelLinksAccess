@@ -8,7 +8,7 @@ namespace DuelLinksAccess
     public sealed class ResultRewardCatalog
     {
         private static readonly Regex PathPattern = new(@"^DuelResult\.data\.list\.[0-9]+\.reward\.list\.[0-9]+$");
-        private readonly Dictionary<string, (int Id, int Count, string Label)> _rows = new();
+        private readonly Dictionary<string, (string Type, int Id, int Count, string Label)> _rows = new();
         private readonly HashSet<string> _conflicts = new();
         public IEnumerable<string> Labels
         {
@@ -17,17 +17,27 @@ namespace DuelLinksAccess
         public bool Contains(string path) => path != null && _rows.ContainsKey(path);
         public void Add(string path, string type, int id, int count, Func<int, string> getName, string unknown)
         {
-            if (path == null || !PathPattern.IsMatch(path) || type != "item"
+            if (type != "item") return;
+            AddRow(path, type, id, count, getName, unknown);
+        }
+        public void AddCard(string path, int id, int count, Func<int, string> getName, string unknown)
+        {
+            if (count <= 0) return;
+            AddRow(path, "card", id, count, getName, unknown);
+        }
+        private void AddRow(string path, string type, int id, int count, Func<int, string> getName, string unknown)
+        {
+            if (path == null || !PathPattern.IsMatch(path)
                 || id <= 0 || count < 0 || _conflicts.Contains(path)) return;
             if (_rows.TryGetValue(path, out var old))
             {
-                if (old.Id != id || old.Count != count) { _rows.Remove(path); _conflicts.Add(path); }
+                if (old.Id != id || old.Count != count || old.Type != type) { _rows.Remove(path); _conflicts.Add(path); }
                 return;
             }
             string name = null;
             try { name = getName(id); } catch { }
             if (string.IsNullOrWhiteSpace(name)) name = unknown;
-            _rows.Add(path, (id, count, $"{name} ×{count}"));
+            _rows.Add(path, (type, id, count, $"{name} ×{count}"));
         }
     }
 }

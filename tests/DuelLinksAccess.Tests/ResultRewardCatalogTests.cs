@@ -55,4 +55,50 @@ public sealed class ResultRewardCatalogTests
         Assert.Empty(rows.Labels);
         Assert.False(rows.Contains(Row));
     }
+    [Fact]
+    public void CardRewardUsesCardLookupAndKeepsQuantity()
+    {
+        var rows = new ResultRewardCatalog();
+        rows.AddCard(Row, 123, 2, id => id == 123 ? "偽陷阱" : "WRONG", "UNKNOWN");
+        Assert.Equal(new[]{"偽陷阱 ×2"}, rows.Labels);
+    }
+    [Fact]
+    public void RepeatedCardWidgetsDoNotDuplicateOneDrop()
+    {
+        var rows = new ResultRewardCatalog();
+        for(int i=0;i<3;i++) rows.AddCard(Row,123,1,_=>"魔菌","UNKNOWN");
+        Assert.Equal(new[]{"魔菌 ×1"}, rows.Labels);
+    }
+    [Fact]
+    public void SeparateBoxesMayDropTheSameCard()
+    {
+        var rows = new ResultRewardCatalog();
+        rows.AddCard(Row,123,1,_=>"魔菌","UNKNOWN");
+        rows.AddCard("DuelResult.data.list.1.reward.list.1",123,1,_=>"魔菌","UNKNOWN");
+        Assert.Equal(new[]{"魔菌 ×1","魔菌 ×1"}, rows.Labels);
+    }
+    [Fact]
+    public void CardDropCannotComeFromPossibleRewardsOrFutureLevelUps()
+    {
+        var rows = new ResultRewardCatalog();
+        rows.AddCard("Chara.1.itemDic.39",123,1,_=>"name","UNKNOWN");
+        rows.AddCard("NpcReward.cardList.0",123,1,_=>"name","UNKNOWN");
+        rows.AddCard(Row,123,0,_=>"name","UNKNOWN");
+        Assert.Empty(rows.Labels);
+    }
+    [Fact]
+    public void ConflictingItemAndCardTypesRejectTheRow()
+    {
+        var rows = new ResultRewardCatalog();
+        rows.Add(Row,"item",123,1,_=>"item","UNKNOWN");
+        rows.AddCard(Row,123,1,_=>"card","UNKNOWN");
+        Assert.Empty(rows.Labels);
+    }
+    [Fact]
+    public void UnknownCardKeepsExplicitUnknownAndActualCount()
+    {
+        var rows = new ResultRewardCatalog();
+        rows.AddCard(Row,123,1,_=>throw new System.Exception(),"UNKNOWN");
+        Assert.Equal(new[]{"UNKNOWN ×1"},rows.Labels);
+    }
 }

@@ -115,6 +115,7 @@ namespace DuelLinksAccess
         /// </summary>
         public void Update()
         {
+            AccessibleTextEditor.Poll();
             if (GameStateTracker.CurrentScreen != GameScreen.Dialog)
             {
                 if (_lastDialogName != "")
@@ -265,7 +266,7 @@ namespace DuelLinksAccess
 
         #region Scanning
 
-        private void ScanDialog()
+        private void ScanDialog(bool focusNameConfirmation = false)
         {
             _items.Clear();
             _focusIndex = 0;
@@ -303,8 +304,10 @@ namespace DuelLinksAccess
 
                 // Read and announce dialog text first (Say to interrupt "Dialog" announcement).
                 // Skip re-announcing identical text on retry scans.
+                bool reportIconSelection = _playerIconRefreshRoot == dialogRoot;
+                _playerIconRefreshRoot = null;
                 string dialogText = ReadDialogText(dialogRoot);
-                if (FindSettings(dialogRoot) == null && !string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
+                if (!reportIconSelection && FindSettings(dialogRoot) == null && !string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                 {
                     AnnounceDialogText(dialogText);
                 }
@@ -334,6 +337,9 @@ namespace DuelLinksAccess
                 // controls from the VC's own live data
                 ApplyAutoDeckLabels(dialogRoot);
                 ApplySettingsItems(dialogRoot);
+                ApplyTitleDisplaySettings(dialogRoot);
+                ApplyGuideBingoTabs(dialogRoot);
+                ApplyTimezonePickerLabels(dialogText);
                 ApplyDownloadSettingsItems(dialogRoot);
 
                 // If top VC has nothing (empty overlay like TutorialArrowPart),
@@ -379,12 +385,32 @@ namespace DuelLinksAccess
                 if (_settingsVc == null) TidyHtjsonListItems();
                 ApplyBoostItemLabels(dialogRoot);
                 ApplyChronicleItemLabels(dialogRoot);
+                AddSkillCostRows(dialogRoot);
                 TidyGateSwitchItems(dialogRoot);
                 TidyGateRewardRateItems(dialogRoot);
+                if (IsPlayerNameDialog(dialogRoot)
+                    || (dialogText.Contains("死亡導遊", StringComparison.Ordinal)
+                        && dialogText.Contains("賓果", StringComparison.Ordinal)))
+                    _items.RemoveAll(item => item.Go != null && item.Go.name == "Scrollbar");
+                if (dialogText?.Contains("已領取道具", StringComparison.Ordinal) == true
+                    && _items.Any(item => item.Type == ItemType.Button && item.Label == "確定"))
+                    _items.RemoveAll(item => item.Go != null && item.Go.name == "Icon"
+                        && item.Label == "×2" && item.Go.transform.parent?.parent?.name == "ButtonSet");
+
+                if (_items.Count > 0)
+                    _items.RemoveAll(item => item.Go != null && LabelExtractor.IsSkillReceiptIcon(item.Go));
 
                 MelonLogger.Msg($"[Dialog] Found {_items.Count} interactive items");
 
                 _dialogRoot = dialogRoot;
+                if (reportIconSelection && _items.Count > 0)
+                {
+                    _textMode = false;
+                    _lastDialogText = dialogText;
+                    ScreenReader.Say(_items[_focusIndex].Label);
+                    return;
+                }
+
 
                 // If dialog has tabs, announce the active tab name
                 string activeTabName = _settingsVc == null ? GetActiveTabName(dialogRoot) : null;
@@ -400,6 +426,11 @@ namespace DuelLinksAccess
                 {
                     _textMode = false;
                     ScreenReader.SayQueued(Loc.Get("dialog_buttons", _items.Count));
+                    if (focusNameConfirmation)
+                    {
+                        int confirm = _items.FindIndex(item => item.Type == ItemType.Button && item.Label == "確定");
+                        if (confirm >= 0) _focusIndex = confirm;
+                    }
                     AnnounceCurrentItem(queued: true);
                 }
                 else if (!string.IsNullOrEmpty(dialogText))
@@ -1216,9 +1247,230 @@ namespace DuelLinksAccess
         /// and get removed. Off-screen entries (ScrollRect row recycling) are
         /// unreachable — logged as a known limitation.
         /// </summary>
+        private RectTransform _pendingPlayerIconTab;
+        private GameObject _playerIconRefreshRoot;
+        private string _pendingPlayerIconAsset;
+
+        private void ApplyPlayerIconLabels(
+            Il2CppYgomGame.Customize.AccessoriesListDialogViewController vc)
+        {
+            var content = vc.scrollRect?.content;
+            if (content == null) return;
+            var root = vc.gameObject;
+            _items.RemoveAll(item => item.Go != null
+                && (item.Go.name == "Scrollbar" || item.Go.transform.IsChildOf(content)));
+
+            var tabs = new List<DialogItem>();
+            var tabParent = vc.tabParent;
+            if (tabParent != null)
+            {
+                foreach (var rect in tabParent.GetComponentsInChildren<RectTransform>(false))
+                {
+                    if (!rect.name.StartsWith("Tab", StringComparison.Ordinal)
+                        || !int.TryParse(rect.name.Substring(3), out _)) continue;
+                    string label = AccessibleUiText.Read(rect.gameObject);
+                    if (string.IsNullOrWhiteSpace(label)) continue;
+                    if (rect.Find("Select")?.gameObject.activeInHierarchy == true)
+                    {
+                        label = Loc.Get("friend_tab_selected", label);
+                        if (rect == _pendingPlayerIconTab) _focusIndex = tabs.Count;
+                    }
+                    tabs.Add(new DialogItem
+                    {
+                        Go = root, Label = label, Type = ItemType.Button,
+                        NativeAction = () =>
+                        {
+                            if (!ClickDialogTab(rect)) return;
+                            _pendingPlayerIconTab = rect;
+                            _playerIconRefreshRoot = root;
+                            _scanned = false;
+                            _scanDelay = 0.35f;
+                        }
+                    });
+                }
+            }
+
+            _pendingPlayerIconTab = null;
+            int position = 0;
+            foreach (var row in content.GetComponentsInChildren<Il2CppYgomGame.Customize.AccessoriesListRow>(false))
+            {
+                var buttons = row.buttons;
+                if (buttons == null) continue;
+                for (int column = 0; column < buttons.Count; column++)
+                {
+                    var button = buttons[column];
+                    if (button == null || !button.gameObject.activeInHierarchy || !button.interactable) continue;
+                    var graphic = row.images != null && column < row.images.Count ? row.images[column] : null;
+                    string asset = graphic?.TryCast<Image>()?.sprite?.name
+                        ?? graphic?.TryCast<RawImage>()?.texture?.name;
+                    if (string.IsNullOrWhiteSpace(asset)) continue;
+                    position++;
+                    string label = asset switch
+                    {
+                        "IconE7001" => Loc.Get("profile_icon_yugi"),
+                        "IconE27000000" => Loc.Get("profile_icon_green_crown"),
+                        _ => Loc.Get("profile_icon_slot", position)
+                    };
+                    if (asset.StartsWith("IconE", StringComparison.Ordinal)
+                        && asset.Substring(5) == vc.curAccessoryId)
+                        label = Loc.Get("accessory_current", label);
+                    if (asset == _pendingPlayerIconAsset) _focusIndex = tabs.Count;
+                    tabs.Add(new DialogItem
+                    {
+                        Go = root,
+                        Label = label,
+                        Type = ItemType.Button,
+                        NativeAction = () =>
+                        {
+                            if (button == null || !button.gameObject.activeInHierarchy || !button.interactable
+                                || graphic == null || !asset.StartsWith("IconE", StringComparison.Ordinal))
+                                return;
+                            string liveAsset = graphic.TryCast<Image>()?.sprite?.name
+                                ?? graphic.TryCast<RawImage>()?.texture?.name;
+                            string id = asset.Substring(5);
+                            if (liveAsset != asset || !int.TryParse(id, out _)) return;
+                            _pendingPlayerIconAsset = asset;
+                            _playerIconRefreshRoot = root;
+                            vc.OnClickAccessory(id, row);
+                            _scanned = false;
+                            _scanDelay = 0.35f;
+                        }
+                    });
+                    DebugLogger.Log(LogCategory.Handler, "Dialog", $"Player icon slot {position}: asset={asset}");
+                }
+            }
+            _pendingPlayerIconAsset = null;
+            _items.InsertRange(0, tabs);
+        }
+
+        private void ApplyGuideBingoTabs(GameObject root)
+        {
+            if (GetTopVcRoot("content")?.name != "DDGuide") return;
+
+            var tabs = new List<(RectTransform Rect, string Label, bool Selected)>();
+            foreach (var tab in root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTabButton>(false))
+            {
+                var label = tab.isSelected ? tab.selectLabel ?? tab.normalLabel : tab.normalLabel;
+                string name = LabelExtractor.StripRichText(label?.text ?? "").Trim();
+                if ((name == "遊戲玩法" || name == "推薦獎勵")
+                    && tab.transform.TryCast<RectTransform>() is RectTransform rect)
+                    tabs.Add((rect, name, tab.isSelected));
+            }
+            if (tabs.Count != 2)
+            {
+                tabs.Clear();
+                foreach (var rect in root.GetComponentsInChildren<RectTransform>(false))
+                {
+                    var normal = rect.Find("Normal");
+                    var selected = rect.Find("Select");
+                    if (normal == null || selected == null) continue;
+                    bool active = selected.gameObject.activeInHierarchy;
+                    string name = AccessibleUiText.Read((active ? selected : normal).gameObject);
+                    if (name == "遊戲玩法" || name == "推薦獎勵")
+                        tabs.Add((rect, name, active));
+                }
+            }
+            if (tabs.Count != 2 || tabs[0].Label == tabs[1].Label) return;
+            _items.RemoveAll(item => item.Go != null && item.Go.name == "Scrollbar");
+            if (tabs.Any(tab => tab.Selected && tab.Label == "推薦獎勵"))
+                ApplyGuideBingoRewardLabels(root);
+
+            _items.RemoveAll(item => item.Go != null && tabs.Any(tab => item.Go.transform.IsChildOf(tab.Rect)));
+            int index = 0;
+            foreach (var tab in tabs)
+            {
+                if (tab.Selected && tab.Rect == _pendingPlayerIconTab) _focusIndex = index;
+                _items.Insert(index++, new DialogItem
+                {
+                    Go = root,
+                    Label = tab.Selected ? Loc.Get("friend_tab_selected", tab.Label) : tab.Label,
+                    Type = ItemType.Button,
+                    NativeAction = () =>
+                    {
+                        if (!ClickDialogTab(tab.Rect)) return;
+                        _pendingPlayerIconTab = tab.Rect;
+                        _playerIconRefreshRoot = root;
+                        _scanned = false;
+                        _scanDelay = 0.35f;
+                    }
+                });
+            }
+            _pendingPlayerIconTab = null;
+        }
+
+        private void ApplyGuideBingoRewardLabels(GameObject root)
+        {
+            var texts = AccessibleUiText.ReadParts(root);
+            string cardHeading = texts.FirstOrDefault(part => System.Text.RegularExpressions.Regex.IsMatch(
+                part, @"^\[\s*[0-9]+\s*號賓果卡\s*\]"));
+            if (cardHeading != null)
+            {
+                var cardParts = texts.Skip(texts.IndexOf(cardHeading))
+                    .TakeWhile(part => !part.Contains("填滿賓果卡", StringComparison.Ordinal)
+                        && !System.Text.RegularExpressions.Regex.IsMatch(part, @"^[0-9]+號賓果卡已完成$"))
+                    .Where(part => part != "關閉").Distinct().ToArray();
+                int section = _items.FindIndex(item => item.Label == "推薦的活動獎勵");
+                if (section >= 0 && cardParts.Length > 0)
+                    _items.Insert(section + 1, new DialogItem { Go = root, Type = ItemType.Header,
+                        Label = string.Join("。", cardParts) });
+            }
+
+            foreach (var item in _items)
+            {
+                if (item.Go == null || item.Type != ItemType.Header) continue;
+                var match = System.Text.RegularExpressions.Regex.Match(item.Label ?? "", @"^([0-9]+)號賓果卡已完成$");
+                if (!match.Success) continue;
+                for (var row = item.Go.transform.parent; row != null && row != root.transform; row = row.parent)
+                {
+                    var parts = AccessibleUiText.ReadParts(row.gameObject).Distinct().ToArray();
+                    if (parts.Length > 2) break;
+                    if (parts.Length != 2 || !int.TryParse(parts[1], out int count) || count <= 0) continue;
+                    bool gem = row.GetComponentsInChildren<Image>(false)
+                        .Any(image => image.sprite?.name == "ItemA0001");
+                    if (gem)
+                    {
+                        string name = Il2CppYgomGame.Utility.ItemUtil.GetName(1);
+                        item.Label = Loc.Get("guide_bingo_sheet_reward", match.Groups[1].Value, name, count);
+                    }
+                    break;
+                }
+                if (item.Label == match.Value)
+                    item.Label = Loc.Get("guide_bingo_sheet_condition", match.Groups[1].Value);
+            }
+        }
+
+        private static bool ClickDialogTab(RectTransform tab)
+        {
+            if (tab == null || !tab.gameObject.activeInHierarchy) return false;
+            var system = UnityEngine.EventSystems.EventSystem.current;
+            if (system == null) return false;
+            var canvas = tab.GetComponentInParent<Canvas>();
+            var camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay
+                ? canvas.worldCamera : null;
+            var data = new UnityEngine.EventSystems.PointerEventData(system)
+            {
+                position = RectTransformUtility.WorldToScreenPoint(camera, tab.TransformPoint(tab.rect.center)),
+                button = UnityEngine.EventSystems.PointerEventData.InputButton.Left
+            };
+            var hits = new Il2CppSystem.Collections.Generic.List<UnityEngine.EventSystems.RaycastResult>();
+            system.RaycastAll(data, hits);
+            if (hits.Count == 0) return false;
+            var hit = hits[0];
+            if (hit.gameObject == null || !hit.gameObject.transform.IsChildOf(tab)) return false;
+            data.pointerCurrentRaycast = hit;
+            return UnityEngine.EventSystems.ExecuteEvents.ExecuteHierarchy(hit.gameObject, data,
+                UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler) != null;
+        }
+
         private void ApplyAccessoriesListLabels(
             Il2CppYgomGame.Customize.AccessoriesListDialogViewController vc)
         {
+            if (vc.Mode == Il2CppYgomGame.Customize.AccessoriesListDialogViewController.MODE.Emblem)
+            {
+                ApplyPlayerIconLabels(vc);
+                return;
+            }
+
             var ids = vc.setupList;
             if (ids == null || ids.Count == 0)
             {
@@ -1895,7 +2147,7 @@ namespace DuelLinksAccess
             string msg;
             if (item.Type == ItemType.Header)
             {
-                msg = $"{item.Label} heading, {pos} of {total}";
+                msg = Loc.Get("dialog_heading", item.Label, pos, total);
             }
             else if (item.Type == ItemType.Slider && item.SliderComponent != null)
             {
@@ -1945,6 +2197,9 @@ namespace DuelLinksAccess
             ScreenReader.Say(val.ToString());
         }
 
+        private static bool IsPlayerNameDialog(GameObject root) =>
+            root != null && AccessibleUiText.ReadParts(root).Contains("玩家名稱輸入");
+
         private void ActivateCurrentItem()
         {
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
@@ -1972,6 +2227,22 @@ namespace DuelLinksAccess
                     ScreenReader.Say(Loc.Get("dialog_click_error"));
                 }
                 return;
+            }
+
+            if (item.Go.name == "WrapInputField(Clone)" && _dialogRoot != null
+                && AccessibleUiText.Read(_dialogRoot).Contains("玩家名稱輸入", StringComparison.Ordinal))
+            {
+                var input = item.Go.GetComponentInChildren<InputField>(false);
+                if (input != null && input.interactable)
+                {
+                    var root = _dialogRoot;
+                    int instance = _lastDialogInstanceId;
+                    AccessibleTextEditor.Open(input, true,
+                        () => root != null && root == _dialogRoot
+                            && GetTopVcInstanceId(_activeManager) == instance,
+                        () => ScanDialog(focusNameConfirmation: true));
+                    return;
+                }
             }
 
             var itemSelectable = GetNearestSelectable(item.Go);

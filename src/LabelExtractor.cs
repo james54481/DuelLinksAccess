@@ -124,6 +124,24 @@ namespace DuelLinksAccess
             return TryChildUnityText(go);
         }
 
+        internal static bool IsSkillReceiptIcon(GameObject go)
+        {
+            if (go.name != "Icon") return false;
+            for (var current = go.transform.parent; current != null; current = current.parent)
+            {
+                if (current.name == "HtjsonDialog") break;
+                var node = current.GetComponent<Il2CppYgomSystem.Htjson.HtjsonNode>();
+                if (node?.replaceParam == null
+                    || !node.replaceParam.TryGetValue("%datapath%", out var path))
+                    continue;
+                string row = path?.ToString();
+                if (row?.StartsWith("DialogGet.get_data.item.", StringComparison.Ordinal) == true
+                    && Il2CppYgomSystem.Utility.ClientWork.getStringByJsonPath(row + ".type", "") == "skill")
+                    return true;
+            }
+            return false;
+        }
+
         private static string TryRewardItemIconText(GameObject go)
         {
             if (go.name != "Icon" && go.name != "TextArea" && go.name != "ButtonSet") return null;
