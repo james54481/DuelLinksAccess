@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using MelonLoader;
 
@@ -45,13 +45,19 @@ namespace DuelLinksAccess
 
         // Deferred dialog text — rapid-fire RunDialog events (multiple per
         // phase transition) replace each other so only the last one speaks
-        private static string _pendingDialogText;
+        private static readonly DuelPromptTracker _dialogPrompt = new();
+        private static readonly DuelPromptSpeechPolicy _promptSpeech = new();
+        private static readonly OpponentWaitTracker _opponentWait = new();
+        private static float _nextPromptPoll;
 
         private readonly record struct PendingPositionChange(
             int Player, int Locate, int UniqueId, float Deadline);
 
         private static readonly List<PendingPositionChange> _pendingPositionChanges = new();
         private const float PositionReadDelaySeconds = 0.10f;
+        private readonly record struct PendingFlip(int Player, int Locate, int UniqueId,
+            float NextRead, float Deadline);
+        private static readonly List<PendingFlip> _pendingFlips = new();
 
         #endregion
 
@@ -124,27 +130,10 @@ namespace DuelLinksAccess
                 AnnouncePhaseChange();
             }
 
-            if (_pendingDialogText != null)
-            {
-                // Drop the deferred dialog if a card-selection picker has
-                // become active in the meantime — the picker prompt is the
-                // relevant cue. Engine fires RunDialog "You succeeded in
-                // Special Summoning a monster. Check the field?" with p3=2
-                // BEFORE opening the material EmotionalList; without this
-                // suppression the user hears a misleading completion message
-                // before the actual material picker reads its options.
-                if (IsEmotionalListActive())
-                {
-                    _pendingDialogText = null;
-                }
-                else
-                {
-                    Announce(_pendingDialogText);
-                    _pendingDialogText = null;
-                }
-            }
+            UpdateDuelPrompts();
 
             ResolvePendingPositionChanges();
+            ResolvePendingFlips();
         }
 
         /// <summary>
@@ -169,6 +158,10 @@ namespace DuelLinksAccess
                     // DuelState handles InDuel/DuelEnded flags and clears its
                     // own state. We just reset our announcement-dedup vars
                     // and the position tracker, then announce.
+                    _dialogPrompt.Reset();
+                    _promptSpeech.Reset();
+                    _opponentWait.Reset();
+                    _pendingFlips.Clear();
                     _turnAnnouncements.Reset();
                     _lastAnnouncedPhase = -1;
                     DuelPositionTracker.Reset();
@@ -177,6 +170,10 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.DuelEnd:
+                    _dialogPrompt.Reset();
+                    _promptSpeech.Reset();
+                    _opponentWait.Reset();
+                    _pendingFlips.Clear();
                     Announce(Loc.Get("duel_ended"));
                     DuelPositionTracker.Reset();
                     break;
@@ -222,7 +219,9 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.CpuThinking:
-                    Announce(Loc.Get("duel_opponent_thinking"));
+                    // CpuThinking also fires during our own choices and animations.
+                    // The live timer input flags below are the only wait signal.
+                    DebugLogger.Log(LogCategory.Game, "DuelPrompt", "CpuThinking event retained for diagnostics only");
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.CutinDraw:
@@ -277,8 +276,7 @@ namespace DuelLinksAccess
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardBreak:
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardExplosion:
-                    DuelPositionTracker.Forget(TryResolveUniqueId(param2, param3));
-                    AnnounceCardEvent("duel_destroyed", param1, param2, param3);
+                    AnnounceDestroyedCard(param1, param2, param3);
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.BattleAttack:
@@ -313,7 +311,10 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.ChainSet:
-                    Announce(Loc.Get("duel_chain_link", param3));
+                    int? link = DuelChainPolicy.DecodeLink(param3);
+                    MelonLogger.Msg($"[DuelChain] numUid={param3} link={link?.ToString() ?? "UNKNOWN"}");
+                    Announce(link.HasValue ? Loc.Get("duel_chain_link", link.Value)
+                        : Loc.Get("duel_chain_started"));
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.RunFusion:
@@ -321,7 +322,11 @@ namespace DuelLinksAccess
                     break;
 
                 case Il2CppYgomGame.Duel.Engine.ViewType.CardFlipTurn:
-                    AnnounceCardEvent("duel_flipped", param1, param2, param3);
+                    // Animation-level event also occurs during skill card placement.
+                    // Its p2/p3 are not candidate card UIDs. Only CutinFlip below
+                    // supplies confirmed monster-flip semantics.
+                    DebugLogger.Log(LogCategory.Game, "DuelFlip",
+                        $"Animation only, no flip announcement: p1={param1} p2={param2} p3={param3}");
                     break;
             }
         }
@@ -366,8 +371,12 @@ namespace DuelLinksAccess
             _lastAnnouncedPhase = -1;
             _pendingPhaseAnnouncement = false;
             _pendingPhaseDeadline = -1f;
-            _pendingDialogText = null;
+            _dialogPrompt.Reset();
+            _promptSpeech.Reset();
+            _opponentWait.Reset();
+            _nextPromptPoll = 0f;
             _pendingPositionChanges.Clear();
+            _pendingFlips.Clear();
             DuelPositionTracker.Reset();
             DuelState.Reset();
         }
@@ -517,6 +526,21 @@ namespace DuelLinksAccess
         /// Announces a card-related event, attempting to resolve the card name
         /// from the event parameters.
         /// </summary>
+        // james54481, 2026-11-06: CardBreak/Explosion use player, locate, UID.
+        // Do not feed locate into the generic candidate-UID resolver.
+        private static void AnnounceDestroyedCard(int player, int locate, int uniqueId)
+        {
+            if (uniqueId > 0) DuelPositionTracker.Forget(uniqueId);
+            if (!DuelState.IsMine(player)) return;
+            CardSnapshot? observed = null;
+            try { observed = DuelState.GetFieldCard(player, locate, 0); } catch { }
+            string name = DuelDestructionPolicy.ResolveName(locate, uniqueId,
+                observed?.UniqueId ?? 0, observed?.Name, TryGetCardName);
+            MelonLogger.Msg($"[DuelDestroy] player={player} locate={locate} uid={uniqueId} "
+                + $"fieldUid={observed?.UniqueId ?? 0} name={name ?? "UNKNOWN"}");
+            Announce(Loc.Get("duel_destroyed", name ?? Loc.Get("duel_a_card")));
+        }
+
         private static void AnnounceCardEvent(string locKey, int param1, int param2, int param3)
         {
             // Path 1 — single-player convention: p2 (or sometimes p3) is the
@@ -716,18 +740,50 @@ namespace DuelLinksAccess
         /// </summary>
         private static void HandleFlip(int player, int locate)
         {
-            int uid = 0;
-            try
+            // james54481, 2026-11-06: read the visual adapter, not hollow PvP APIs.
+            if (!DuelState.IsMine(player)) return;
+            CardSnapshot? card = null;
+            try { card = DuelState.GetFieldCard(player, locate, 0); } catch { }
+            int uid = card?.UniqueId ?? 0;
+            if (uid <= 0) return;
+            DuelPositionTracker.SetDefense(uid);
+            _pendingFlips.RemoveAll(item => item.Player == player && item.Locate == locate);
+            float now = UnityEngine.Time.unscaledTime;
+            _pendingFlips.Add(new PendingFlip(player, locate, uid, now + 0.15f, now + 2f));
+        }
+
+        private static void ResolvePendingFlips()
+        {
+            float now = UnityEngine.Time.unscaledTime;
+            for (int i = _pendingFlips.Count - 1; i >= 0; i--)
             {
-                uid = Il2CppYgomGame.Duel.Engine.DLL_DuelGetCardUniqueID(
-                    player, locate, 0);
+                var pending = _pendingFlips[i];
+                if (!InDuel || DuelEnded || now > pending.Deadline)
+                {
+                    _pendingFlips.RemoveAt(i);
+                    continue;
+                }
+                if (now < pending.NextRead) continue;
+                CardSnapshot? card = null;
+                try { card = DuelState.GetFieldCard(pending.Player, pending.Locate, 0); } catch { }
+                int actualUid = card?.UniqueId ?? 0;
+                if (actualUid > 0 && actualUid != pending.UniqueId)
+                {
+                    _pendingFlips.RemoveAt(i);
+                    continue;
+                }
+                bool confirmed = DuelFlipPolicy.CanAnnounce("CutinFlip",
+                    DuelState.IsMine(pending.Player), pending.Locate, pending.UniqueId,
+                    actualUid, card?.IsFaceUp ?? false);
+                if (confirmed)
+                {
+                    string name = card?.Name ?? Loc.Get("duel_a_card");
+                    MelonLogger.Msg($"[DuelFlip] Confirmed player={pending.Player} locate={pending.Locate} uid={actualUid} name={name}");
+                    Announce(Loc.Get("duel_flipped", name));
+                    _pendingFlips.RemoveAt(i);
+                }
+                else _pendingFlips[i] = pending with { NextRead = now + 0.1f };
             }
-            catch { }
-
-            DebugLogger.Log(LogCategory.Game, "DuelEvent",
-                $"CutinFlip: player={player}, locate={locate}, uid={uid}");
-
-            if (uid > 0) DuelPositionTracker.SetDefense(uid);
         }
 
         /// <summary>
@@ -783,21 +839,61 @@ namespace DuelLinksAccess
         /// </summary>
         private static void DeferDialogText(string fallbackKey)
         {
+            // No generic spoken fallback: native yes/no and selection handlers
+            // already own actionable prompts. Retry real text once UI settles.
+            _dialogPrompt.Request(UnityEngine.Time.unscaledTime);
+        }
+
+        private static bool DedicatedPromptActive()
+        {
+            if (IsEmotionalListActive()) return true;
             try
             {
-                string text = ComposeDialogText();
-                if (!string.IsNullOrEmpty(text))
+                var worker = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d;
+                return worker?.yesnoDialog?.content?.activeInHierarchy == true
+                    || worker?.selEffDialog?.gameObject?.activeInHierarchy == true;
+            }
+            catch { return true; }
+        }
+
+        private static void UpdateDuelPrompts()
+        {
+            float now = UnityEngine.Time.unscaledTime;
+            if (!InDuel || DuelEnded)
+            {
+                _dialogPrompt.Reset();
+                _opponentWait.Reset();
+                return;
+            }
+            if (now < _nextPromptPoll) return;
+            _nextPromptPoll = now + 0.1f;
+            bool modal = DedicatedPromptActive();
+            if (_dialogPrompt.Pending)
+            {
+                string text = null;
+                if (!modal)
                 {
-                    _pendingDialogText = text;
-                    return;
+                    try { text = ComposeDialogText(); } catch { }
+                    if (!string.IsNullOrEmpty(text) && IsFieldCheckBoilerplate(text)) text = null;
+                }
+                string ready = _dialogPrompt.Observe(now, text, modal);
+                if (ready != null && _promptSpeech.TryAccept(ready, now))
+                {
+                    MelonLogger.Msg($"[DuelPrompt] Resolved text: {ready}");
+                    Announce(ready);
                 }
             }
-            catch (Exception ex)
+            bool active = false, mine = false, opponent = false;
+            try
             {
-                DebugLogger.Log(LogCategory.Game, "DuelDialog",
-                    $"ComposeDialogText error: {ex.Message}");
+                var timer = Il2CppYgomGame.Duel.DuelClient.instance?.worker2d?.duelTimer;
+                active = timer != null && timer._Active_k__BackingField && !timer._Lock_k__BackingField;
+                mine = timer?.isPlayerInput == true;
+                opponent = timer?.isOpponentInput == true;
             }
-            _pendingDialogText = Loc.Get(fallbackKey);
+            catch { }
+            if (_opponentWait.Observe(now, active, mine, opponent, modal || IsMidSelectionInput() || _dialogPrompt.Pending))
+                Announce(Loc.Get("duel_waiting_opponent"));
         }
 
         /// <summary>
@@ -824,7 +920,7 @@ namespace DuelLinksAccess
             if (IsFieldCheckBoilerplate(text)) return;
 
             // Defer like the p3!=0 path so a rapid burst only speaks the last.
-            _pendingDialogText = text;
+            DeferDialogText("duel_dialog");
         }
 
         /// <summary>
@@ -834,12 +930,7 @@ namespace DuelLinksAccess
         /// card prompt) is worth announcing.
         /// </summary>
         private static bool IsFieldCheckBoilerplate(string text)
-        {
-            return text.IndexOf("Check the field",
-                       StringComparison.OrdinalIgnoreCase) >= 0
-                || text.IndexOf("can be activated by a chain",
-                       StringComparison.OrdinalIgnoreCase) >= 0;
-        }
+            => DuelPromptSpeechPolicy.IsInformationalNoise(text);
 
         /// <summary>
         /// Composes and announces duel dialog/selection text from the Engine's
@@ -847,10 +938,13 @@ namespace DuelLinksAccess
         /// </summary>
         private static void AnnounceDialogText(string fallbackKey)
         {
+            // A live picker owns both the instructions and the card identity.
+            // DialogMix can still contain the preceding field-check prompt.
+            if (DedicatedPromptActive()) return;
             try
             {
                 string text = ComposeDialogText();
-                if (!string.IsNullOrEmpty(text))
+                if (_promptSpeech.TryAccept(text, UnityEngine.Time.unscaledTime))
                 {
                     Announce(text);
                     return;
@@ -858,10 +952,9 @@ namespace DuelLinksAccess
             }
             catch (Exception ex)
             {
-                DebugLogger.Log(LogCategory.Game, "DuelDialog",
-                    $"ComposeDialogText error: {ex.Message}");
+                DebugLogger.Log(LogCategory.Game, "DuelDialog", $"ComposeDialogText error: {ex.Message}");
             }
-            Announce(Loc.Get(fallbackKey));
+            // RunList's real picker announces when ready; no stale generic fallback.
         }
 
         /// <summary>

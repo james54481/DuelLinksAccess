@@ -17,7 +17,7 @@ using System.Collections;
 //   See docs/technical-reference.md section "CRITICAL: Accessing Game Code"
 // ============================================================================
 
-[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.6", "DuelLinksAccess Team")]
+[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.7", "DuelLinksAccess Team")]
 [assembly: MelonGame("Konami Digital Entertainment Co., Ltd.", "Yu-Gi-Oh! DUEL LINKS")]
 
 namespace DuelLinksAccess
@@ -308,7 +308,9 @@ namespace DuelLinksAccess
             _duelHandler?.Update();
             if (_duelHandler?.IsConfirmationActive == true) return;
 
+            DeckSaveFeedback.Update();
             ChronicleReceiptFlow.Observe();
+            ScenarioManualPlayback.Update();
 
             // Dialog handler — also handles duel dialogs (Yes/No, effect selection)
             _dialogHandler?.Update();
@@ -1102,7 +1104,7 @@ namespace DuelLinksAccess
 
         private void AnnounceHelp()
         {
-            string help = Loc.Get("help_text") + " " + Loc.Get("ui_shop_help")
+            string help = Loc.Get("help_text") + " " + Loc.Get("deck_operations_help_extra") + " " + Loc.Get("ui_shop_help")
                 + " " + Loc.Get("duel_skill_help");
             ScreenReader.Say(help);
         }

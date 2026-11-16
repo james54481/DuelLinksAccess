@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -9,6 +9,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/TextEditorPolicy.cs" Link="Source/TextEditorPolicy.cs" />
+    <Compile Include="../../src/DeckRecipePolicy.cs" Link="Source/DeckRecipePolicy.cs" />
+    <Compile Include="../../src/DeckSaveState.cs" Link="Source/DeckSaveState.cs" />
+    <Compile Include="../../src/DeckSelectionPolicy.cs" Link="Source/DeckSelectionPolicy.cs" />
+    <Compile Include="../../src/DeckCopyPolicy.cs" Link="Source/DeckCopyPolicy.cs" />
+    <Compile Include="../../src/DeckFilterPolicy.cs" Link="Source/DeckFilterPolicy.cs" />
+    <Compile Include="../../src/StudioMenuLabels.cs" Link="Source/StudioMenuLabels.cs" />
+    <Compile Include="../../src/AlbumSeriesLabels.cs" Link="Source/AlbumSeriesLabels.cs" />
+    <Compile Include="../../src/AlbumTextPolicy.cs" Link="Source/AlbumTextPolicy.cs" />
+    <Compile Include="../../src/RewardIdentityPolicy.cs" Link="Source/RewardIdentityPolicy.cs" />
+    <Compile Include="../../src/ScenarioPlaybackPolicy.cs" Link="Source/ScenarioPlaybackPolicy.cs" />
     <Compile Include="..\..\src\BannerDuplicatePolicy.cs" Link="Source\BannerDuplicatePolicy.cs" />
     <Compile Include="..\..\src\HomeRewardCardPolicy.cs" Link="Source\HomeRewardCardPolicy.cs" />
     <Compile Include="..\..\src\HomeRewardDetailPolicy.cs" Link="Source\HomeRewardDetailPolicy.cs" />
@@ -28,6 +39,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/DuelPromptSpeechPolicy.cs" Link="Source/DuelPromptSpeechPolicy.cs" />
+    <Compile Include="../../src/DuelPromptTracker.cs" Link="Source/DuelPromptTracker.cs" />
+    <Compile Include="../../src/PlayerNameDialogPolicy.cs" Link="Source/PlayerNameDialogPolicy.cs" />
+    <Compile Include="../../src/DuelChainPolicy.cs" Link="Source/DuelChainPolicy.cs" />
+    <Compile Include="../../src/DuelFlipPolicy.cs" Link="Source/DuelFlipPolicy.cs" />
+    <Compile Include="../../src/DuelDestructionPolicy.cs" Link="Source/DuelDestructionPolicy.cs" />
     <Compile Include="../../src/RankedHistoryPolicy.cs" Link="Source/RankedHistoryPolicy.cs" />
     <Compile Include="../../src/DeckViewLabelPolicy.cs" Link="Source/DeckViewLabelPolicy.cs" />
     <Compile Include="../../src/GateNavigationLabelPolicy.cs" Link="Source/GateNavigationLabelPolicy.cs" />

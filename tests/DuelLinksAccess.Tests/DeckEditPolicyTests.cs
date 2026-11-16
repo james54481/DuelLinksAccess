@@ -1,9 +1,20 @@
-using Xunit;
+﻿using Xunit;
 
 namespace DuelLinksAccess.Tests;
 
 public sealed class DeckEditPolicyTests
 {
+    [Theory]
+    [InlineData(new int[] { 3, 2, 1 }, 1, 0, 2)]
+    [InlineData(new int[] { 1, 1, 2 }, 1, 1, 1)]
+    [InlineData(new int[] { 2 }, 1, 5, 0)]
+    [InlineData(new int[] { }, 1, 5, 0)]
+    [InlineData(new int[] { 2, 3 }, 0, -1, 0)]
+    public void FocusSurvivesSortFilterAndEmptyResults(int[] cards, int mrk, int previous, int expected)
+    {
+        Assert.Equal(expected, DeckEditPolicy.RestoreFocus(cards, mrk, previous));
+    }
+
     [Fact]
     public void UseFilteredCollection_HonorsEmptyActiveFilter()
     {

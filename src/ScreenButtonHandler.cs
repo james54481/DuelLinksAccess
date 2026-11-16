@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -20,7 +20,7 @@ namespace DuelLinksAccess
     ///   tutorials), reads text aloud and lets Enter/Space advance by simulating a click.
     ///   Polls for text changes to auto-read new dialogue.
     /// </summary>
-    public class ScreenButtonHandler
+    public partial class ScreenButtonHandler
     {
         #region Fields
 
@@ -105,6 +105,7 @@ namespace DuelLinksAccess
             public Slider SliderComponent;
             public Func<string> LiveLabel;
             public Action NativeAction;
+            public Action ReadDetails;
         }
 
         #endregion
@@ -147,6 +148,9 @@ namespace DuelLinksAccess
         public void Update()
         {
             var screen = GameStateTracker.CurrentScreen;
+            if (_deckSelectionPaddingRoot != null && screen != GameScreen.Dialog
+                && GetActiveScreenRoot() != _deckSelectionPaddingRoot)
+                RestoreDeckSelectionPadding();
 
             // Don't handle excluded screens
             if (_excludedScreens.Contains(screen))
@@ -157,6 +161,7 @@ namespace DuelLinksAccess
             }
 
             string currentVc = GameStateTracker.LastViewControllerName;
+            PollDeckCopyTransition(currentVc);
 
             // Resuming after a blocked period (a dialog owned the update
             // chain): if the underlying screen is a scenario root, force a
@@ -194,6 +199,7 @@ namespace DuelLinksAccess
                     MelonLogger.Msg(
                         "[ScreenBtn] Screen root destroyed while VC name unchanged " +
                         $"('{currentVc}') — forcing rescan to recover input");
+                if (currentVc != _lastVcName) _noticeTabFocus = null;
                 _lastVcName = currentVc;
                 _bannerFocusTarget = null;
                 _bannerFocusRoot = null;
@@ -538,6 +544,12 @@ namespace DuelLinksAccess
                         Go = _screenRoot, Label = gateCost, Type = ItemType.Information,
                         LiveLabel = () => GateCostAccessibility.Read(_screenRoot) });
                 FilterItems();
+                AddFriendDuelSummary(_screenRoot);
+                AddNoticeControls(_screenRoot);
+                AddStudioMenu(_screenRoot);
+                AddSceneAlbumSeries(_screenRoot);
+                AddSceneAlbumContents(_screenRoot);
+                AddDeckRecipeLabels(_screenRoot);
                 if (_screenRoot.name == "Home")
                 {
                     _items.RemoveAll(i => HomeLevelRewards.IsHandledScrollbar(_screenRoot, i.Go));
@@ -566,6 +578,8 @@ namespace DuelLinksAccess
                 // On the Deck screen, scan DeckSelectItem components (not standard Selectables)
                 if (GameStateTracker.CurrentScreen == GameScreen.Deck)
                     FindDeckItems(_screenRoot);
+                ApplyDeckSelectionFilters(_screenRoot);
+                AddDeckCopyAccessibility(_screenRoot);
 
                 // Result screens: replace the generic button scan with structured text extraction
                 bool isResultScreen = _screenRoot.name == "ResultBasePage"
@@ -599,6 +613,7 @@ namespace DuelLinksAccess
                     _arenaSignature = ArenaSignature();
                 if (isResultScreen) { _textMode = false; return; }
                 if (_arenaRefreshing) return;
+                if (RestoreDeckSelectionFilterFocus()) return;
                 if (_bannerFocusTarget != null)
                 {
                     if (_screenRoot == _bannerFocusRoot && _screenRoot.name == "Single")
@@ -613,6 +628,18 @@ namespace DuelLinksAccess
                     }
                     _bannerFocusTarget = null;
                     _bannerFocusRoot = null;
+                }
+                if (_noticeTabFocus != null)
+                {
+                    int tabIndex = _items.FindIndex(item => item.Label == _noticeTabFocus
+                        || item.Label == Loc.Get("friend_tab_selected", _noticeTabFocus));
+                    _noticeTabFocus = null;
+                    if (tabIndex >= 0)
+                    {
+                        _focusIndex = tabIndex;
+                        ScreenReader.Say(_items[tabIndex].Label);
+                        return;
+                    }
                 }
                 if (_items.Count > 0 && !suppressLineupAnnounce)
                 {
@@ -700,7 +727,7 @@ namespace DuelLinksAccess
             }
             catch (Exception ex)
             {
-                MelonLogger.Msg($"[ScreenBtn] Scan error: {ex.Message}");
+                MelonLogger.Msg($"[ScreenBtn] Scan error: {ex}");
             }
         }
 
@@ -1585,6 +1612,160 @@ namespace DuelLinksAccess
                 hit.gameObject, data, UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
         }
 
+        // Keep a stable label: native tab clicks destroy and rebuild the Htjson root.
+        private string _noticeTabFocus;
+
+        // james54481, 2026-11-07: ListMenuBanner is not a Unity Selectable.
+        // Bind the live banner callback, never an ordinal-based destination.
+        private int? _studioReturnBanner;
+        private void AddStudioMenu(GameObject root)
+        {
+            if (root == null || root.name != "CardCenterMainMenu") return;
+            _items.RemoveAll(item => item.Go != null && item.Go.GetComponentInParent<Scrollbar>() != null);
+            foreach (var item in _items)
+                if (item.Go?.name == "BackButton") item.Label = Loc.Get("screen_back");
+            var menu = root.GetComponentInChildren<Il2CppYgomGame.Menu.ListMenu>(false);
+            if (menu == null || !menu.IsInit) return;
+            int ordinal = 0;
+            foreach (var banner in root.GetComponentsInChildren<Il2CppYgomGame.Menu.ListMenuBanner>(false))
+            {
+                if (banner == null || !banner.gameObject.activeInHierarchy || !banner.IsBannerEnable()) continue;
+                int id = banner.BannerID;
+                string label = banner.SummaryText != null ? AccessibleUiText.Read(banner.SummaryText) : null;
+                string summary = null;
+                if (menu.m_BannerInfo != null)
+                    foreach (var info in menu.m_BannerInfo)
+                        if (info.m_BannerID == id) { summary = info.m_Summary; break; }
+                if (string.IsNullOrWhiteSpace(label)) label = summary;
+                string labelKey = StudioMenuLabels.Key(id, banner.ImageID);
+                if (string.IsNullOrWhiteSpace(label) && labelKey != null) label = Loc.Get(labelKey);
+                // Do not read image names, internal IDs, or guessed destinations
+                // as confirmed player-facing titles.
+                if (string.IsNullOrWhiteSpace(label)) label = Loc.Get("studio_unknown_entry", ordinal + 1);
+                MelonLogger.Msg($"[StudioMenu] id={id} image={banner.ImageID} summary={summary} label={label}");
+                _items.RemoveAll(i => i.Go != null && (i.Go == banner.gameObject
+                    || i.Go.transform.IsChildOf(banner.transform)));
+                int position = ordinal++;
+                _items.Insert(position, new ScreenItem
+                {
+                    Go = banner.gameObject, Label = label, Type = ItemType.Button,
+                    NativeAction = () =>
+                    {
+                        if (root != _screenRoot || !LabelExtractor.IsAlive(banner.gameObject)
+                            || !banner.gameObject.activeInHierarchy || banner.BannerID != id
+                            || !banner.IsBannerEnable() || menu.IsPlayAnimation()) return;
+                        _studioReturnBanner = id;
+                        banner.OnClickBanner();
+                        MelonLogger.Msg($"[StudioMenu] Activated native banner id={id}");
+                    }
+                });
+                if (_studioReturnBanner == id) _focusIndex = position;
+            }
+        }
+
+        private void AddNoticeControls(GameObject root)
+        {
+            if (root.name != "HtjsonPage" || !_items.Any(item => item.Go?.name == "ac_btn_title")) return;
+            _items.RemoveAll(item => item.Go?.name == "Scrollbar");
+            foreach (var item in _items)
+            {
+                if (item.Go == null) continue;
+                string key = item.Go.name switch
+                {
+                    "BackButton" => "screen_back",
+                    "LButton" => "notice_previous",
+                    "LLButton" => "notice_first",
+                    "RButton" => "notice_next",
+                    "RRButton" => "notice_last",
+                    "check" => "notice_hide_today",
+                    _ => null
+                };
+                if (key != null) item.Label = Loc.Get(key);
+                if (item.Go.name == "card")
+                {
+                    try
+                    {
+                    var card = item.Go.GetComponentInChildren<Il2CppYgomGame.Htjson.CardWidget>(false);
+                    if (card != null && card.loaded && !ReferenceEquals(card.iid, null)
+                        && card.iid.GetCategory().ToString() == "CARD")
+                    {
+                        int id = card.iid.GetMrk();
+                        if (id > 0) item.Label = CardFormatter.GetName(id);
+                    }
+                    }
+                    catch (Exception ex) { DebugLogger.Log(LogCategory.Handler, "Notice", $"Card label failed: {ex}"); }
+                    if (item.Label == "card") item.Label = Loc.Get("notice_unknown_card");
+                }
+                if (item.Go.name == "check")
+                {
+                    var checkbox = item.Go.GetComponent<Il2CppYgomSystem.Htjson.CheckBoxWidget>();
+                    if (checkbox != null)
+                    {
+                        item.LiveLabel = () => Loc.Get(checkbox.isChecked ? "notice_hide_on" : "notice_hide_off");
+                        item.NativeAction = () =>
+                        {
+                            if (root != _screenRoot || checkbox == null || !checkbox.IsInteractable()) return;
+                            checkbox.OnClick();
+                            ScreenReader.Say(item.LiveLabel());
+                        };
+                        continue;
+                    }
+                    var toggle = item.Go.GetComponent<Toggle>();
+                    if (toggle != null)
+                    {
+                        item.LiveLabel = () => Loc.Get(toggle.isOn ? "notice_hide_on" : "notice_hide_off");
+                        item.NativeAction = () =>
+                        {
+                            if (root != _screenRoot || toggle == null || !toggle.IsInteractable()) return;
+                            toggle.isOn = !toggle.isOn;
+                            ScreenReader.Say(item.LiveLabel());
+                        };
+                    }
+                }
+            }
+
+            var tabs = root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTabButton>(false);
+            int index = 0;
+            foreach (var tab in tabs)
+            {
+                var text = tab.isSelected ? tab.selectLabel ?? tab.normalLabel : tab.normalLabel;
+                string label = LabelExtractor.StripRichText(text?.text ?? "").Trim();
+                if (string.IsNullOrEmpty(label)) continue;
+                var rect = tab.transform.TryCast<RectTransform>();
+                if (rect == null) continue;
+                _items.Insert(index++, new ScreenItem
+                {
+                    Go = tab.gameObject,
+                    Label = tab.isSelected ? Loc.Get("friend_tab_selected", label) : label,
+                    Type = ItemType.Button,
+                    NativeAction = () =>
+                    {
+                        if (root != _screenRoot || tab == null || !tab.gameObject.activeInHierarchy) return;
+                        var system = UnityEngine.EventSystems.EventSystem.current;
+                        if (system == null) return;
+                        var canvas = tab.GetComponentInParent<Canvas>();
+                        var camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay
+                            ? canvas.worldCamera : null;
+                        var data = new UnityEngine.EventSystems.PointerEventData(system)
+                        {
+                            position = RectTransformUtility.WorldToScreenPoint(camera, rect.TransformPoint(rect.rect.center)),
+                            button = UnityEngine.EventSystems.PointerEventData.InputButton.Left
+                        };
+                        var hits = new Il2CppSystem.Collections.Generic.List<UnityEngine.EventSystems.RaycastResult>();
+                        system.RaycastAll(data, hits);
+                        if (hits.Count == 0 || hits[0].gameObject == null
+                            || !hits[0].gameObject.transform.IsChildOf(rect)) return;
+                        data.pointerCurrentRaycast = hits[0];
+                        // Record before dispatch; the native click can destroy the old tab.
+                        _noticeTabFocus = label;
+                        _tabRescanDelay = 0.25f;
+                        UnityEngine.EventSystems.ExecuteEvents.ExecuteHierarchy(hits[0].gameObject, data,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                    }
+                });
+            }
+        }
+
         private bool IsNoticePage()
         {
             try
@@ -1965,6 +2146,7 @@ namespace DuelLinksAccess
             try
             {
                 var seen = new HashSet<int>();
+                var slotCounts = new Dictionary<int, int>();
 
                 var nodes = root.GetComponentsInChildren<
                     Il2CppYgomGame.Deck.DeckListCharaNode>(true);
@@ -1985,22 +2167,30 @@ namespace DuelLinksAccess
 
                         if (!string.IsNullOrWhiteSpace(chara))
                         {
+                            bool selection = root.name == "DeckSelect";
+                            if (selection)
+                            {
+                                var icon = node.charaIcon?.gameObject;
+                                _items.RemoveAll(it => it.Go != null && (it.Go == nodeGo
+                                    || (icon != null && (it.Go == icon || it.Go.transform.IsChildOf(icon.transform)))));
+                            }
                             _items.Add(new ScreenItem
                             {
                                 Go = nodeGo,
-                                Label = Loc.Get("deck_chara_group", chara),
+                                Label = selection ? ReadDeckCharacterGroup(node, chara) : Loc.Get("deck_chara_group", chara),
+                                LiveLabel = selection ? () => ReadDeckCharacterGroup(node, chara) : null,
                                 Type = ItemType.Button
                             });
                             DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                                 $"DeckCharaNode: \"{chara}\" GO={nodeGo.name}");
                         }
 
-                        AddDeckItemsUnder(nodeGo, chara, seen);
+                        AddDeckItemsUnder(nodeGo, chara, seen, slotCounts);
                     }
                 }
 
                 // Deck items outside any chara node (other deck screens).
-                AddDeckItemsUnder(root, null, seen);
+                AddDeckItemsUnder(root, null, seen, slotCounts);
             }
             catch (Exception ex)
             {
@@ -2014,7 +2204,7 @@ namespace DuelLinksAccess
         /// they are the "new deck" targets, not junk, so they get an
         /// "Empty deck slot" label instead of being skipped.
         /// </summary>
-        private void AddDeckItemsUnder(GameObject scope, string chara, HashSet<int> seen)
+        private void AddDeckItemsUnder(GameObject scope, string chara, HashSet<int> seen, Dictionary<int, int> slotCounts)
         {
             var deckItems = scope.GetComponentsInChildren<
                 Il2CppYgomGame.Deck.DeckSelectItem>(true);
@@ -2041,10 +2231,30 @@ namespace DuelLinksAccess
                 if (!string.IsNullOrWhiteSpace(chara))
                     label = Loc.Get("deck_slot_owner", chara, label);
 
+                Func<string> liveLabel = null;
+                if (_screenRoot?.name == "DeckSelect")
+                {
+                    int owner = deckItem.CharaID;
+                    string ownerName = chara;
+                    if (string.IsNullOrWhiteSpace(ownerName)) ownerName = LabelExtractor.ResolveCharaName(owner);
+                    bool purchase = DeckSlotPurchaseVisible(deckItem);
+                    int ordinal = 0;
+                    if (DeckSelectionPolicy.UsesCharacterOrdinal(deckItem.Info != null, purchase,
+                        deckItem.Info?.IsStructure == true, owner))
+                    {
+                        slotCounts.TryGetValue(owner, out ordinal);
+                        slotCounts[owner] = ++ordinal;
+                    }
+                    liveLabel = () => ReadDeckSlot(deckItem, ownerName, ordinal);
+                    label = liveLabel();
+                    // One item per native deck target; discard its generic duplicate/icon labels.
+                    _items.RemoveAll(it => it.Go != null && (it.Go == go || it.Go.transform.IsChildOf(go.transform)));
+                }
                 _items.Add(new ScreenItem
                 {
                     Go = go,
                     Label = label,
+                    LiveLabel = liveLabel,
                     Type = ItemType.Button
                 });
 
@@ -2077,7 +2287,8 @@ namespace DuelLinksAccess
                     // Arena deck details are a separate panel. Only explicit
                     // native navigation controls belong to the header scan.
                     if (_screenRoot != null && _screenRoot.name == "PvpMainMenu" && root != _screenRoot
-                        && go.name != "BackButton" && !go.name.StartsWith("FooterButton", StringComparison.Ordinal))
+                        && go.name != "BackButton" && go.name != "HomeButton"
+                        && !go.name.StartsWith("FooterButton", StringComparison.Ordinal))
                         continue;
 
                     // Skip slider sub-elements (already found as Sliders)
@@ -2108,7 +2319,8 @@ namespace DuelLinksAccess
                     string deckViewKey = DeckViewLabelPolicy.ButtonKey(_screenRoot?.name, go.name);
                     if (deckViewKey != null) label = Loc.Get(deckViewKey);
                     if (_screenRoot != null && _screenRoot.name == "PvpMainMenu")
-                        label = go.name == "BackButton" ? Loc.Get("screen_back") : ArenaLabel(go, label);
+                        label = go.name == "BackButton" ? Loc.Get("screen_back")
+                            : go.name == "HomeButton" ? Loc.Get("deck_view_home") : ArenaLabel(go, label);
                     if (IsNoticePage())
                         label = AccessibleUiText.NoticeLabel(go, label);
 
@@ -2290,6 +2502,82 @@ namespace DuelLinksAccess
             }
         }
 
+        private void AddFriendDuelSummary(GameObject root)
+        {
+            if (root.name != "PvpMainMenu"
+                || !_items.Any(item => item.Go != null && item.Go.name == "duelist"
+                    && item.Label.Contains("勝", StringComparison.Ordinal)
+                    && item.Label.Contains("敗", StringComparison.Ordinal))
+                || !_items.Any(item => item.Label == Loc.Get("arena_friend"))) return;
+
+            foreach (var item in _items.Where(item => item.Label == Loc.Get("arena_friend")))
+                item.Label = Loc.Get("arena_friend_collapse");
+
+            var parts = AccessibleUiText.ReadParts(root).Distinct().ToArray();
+            var summary = new List<string>();
+            foreach (string part in parts)
+                foreach (string line in part.Replace(((char)13).ToString(), "").Split((char)10))
+                {
+                    string text = line.Trim();
+                    if (text.Contains("好友名單中的對手", StringComparison.Ordinal)
+                        || (text.Contains("版本", StringComparison.Ordinal) && text.Contains("玩家", StringComparison.Ordinal)))
+                        summary.Add(text);
+                }
+            if (!summary.Any(part => part.Contains("版本", StringComparison.Ordinal)))
+                summary.Add(Loc.Get("arena_friend_version_notice"));
+
+            // The deck preview can be a sibling of the expanded arena page.
+            for (var scope = root.transform; scope != null; scope = scope.parent)
+            {
+                var titles = scope.GetComponentsInChildren<Text>(false)
+                    .Where(text => text.text?.Trim() == "牌組資訊").Select(text => text.transform)
+                    .Concat(scope.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTextAccessor>(false)
+                        .Where(text => text.text?.Trim() == "牌組資訊").Select(text => text.transform));
+                string deckSummary = null;
+                foreach (var title in titles)
+                {
+                    for (var panel = title.parent; panel != null; panel = panel.parent)
+                    {
+                        var details = AccessibleUiText.ReadParts(panel.gameObject).Distinct().ToArray();
+                        if (details.Any(part => part.Contains("好友名單中的對手", StringComparison.Ordinal))) break;
+                        if (details.Any(part => part.Contains("主要牌組", StringComparison.Ordinal) || part.Contains("主牌組", StringComparison.Ordinal))
+                            && details.Any(part => part.Contains("額外牌組", StringComparison.Ordinal)))
+                        {
+                            var lines = new List<string>();
+                            int main = Array.FindIndex(details, part => part == "主要牌組" || part == "主牌組");
+                            int extra = Array.FindIndex(details, part => part == "額外牌組");
+                            foreach (string part in details.Take(Math.Max(main, 0)))
+                                if (part != "牌組資訊" && part != "EX" && !part.All(char.IsDigit)) lines.Add(part);
+                            if (main >= 0 && main + 1 < details.Length && int.TryParse(details[main + 1], out int mainCount))
+                                lines.Add(Loc.Get("friend_deck_main_count", mainCount));
+                            if (extra >= 0 && extra + 1 < details.Length && int.TryParse(details[extra + 1], out int extraCount))
+                                lines.Add(Loc.Get("friend_deck_extra_count", extraCount));
+                            deckSummary = string.Join("。", lines);
+                            break;
+                        }
+                        if (panel == scope) break;
+                    }
+                    if (deckSummary != null) break;
+                }
+                if (deckSummary != null)
+                {
+                    summary.Add(deckSummary);
+                    break;
+                }
+                if (Main.DebugMode)
+                    DebugLogger.Log(LogCategory.Handler, "FriendSummary",
+                        $"Scope={scope.name}, titles={titles.Count()}, text=[{AccessibleUiText.Read(scope.gameObject)}]");
+                // Continue to the shared UI root: the deck panel has its own canvas.
+            }
+
+            DebugLogger.Log(LogCategory.Handler, "FriendSummary",
+                $"Summary count={summary.Count}, text=[{string.Join(" | ", summary)}]");
+            _items.InsertRange(0, summary.Select(part => new ScreenItem
+            {
+                Go = root, Label = part, Type = ItemType.Information
+            }));
+        }
+
         private static string KcStage(IEnumerable<string> sprites)
         {
             var names = new HashSet<string>(sprites, StringComparer.Ordinal);
@@ -2323,29 +2611,41 @@ namespace DuelLinksAccess
             if (go.name != "duelist" && go.name != "DeckSelectItem2") return null;
             if (go.name == "duelist")
             {
-                for (var current = go.transform; current != null && current.IsChildOf(_screenRoot.transform);
-                    current = current.parent)
-                foreach (var node in current.GetComponents<Il2CppYgomSystem.Htjson.HtjsonNode>())
-                foreach (string key in new[] { "%datapath%", "%sublooppath%" })
+                var rowText = AccessibleUiText.ReadParts(go).Distinct().ToArray();
+                string rank = rowText.FirstOrDefault(part =>
+                    System.Text.RegularExpressions.Regex.IsMatch(part, @"^(?:DLv\.\s*[0-9]+|.+階級\s*[0-9]+|遊戲王)$"));
+                string name = rowText.FirstOrDefault(part => part.StartsWith("對 ", StringComparison.Ordinal)
+                    || part.StartsWith("Vs. ", StringComparison.OrdinalIgnoreCase)
+                    || part.StartsWith("Vs ", StringComparison.OrdinalIgnoreCase));
+                string time = rowText.FirstOrDefault(part =>
+                    System.Text.RegularExpressions.Regex.IsMatch(part, @"\b[0-9]{1,2}:[0-9]{2}\b"));
+                string tally = rowText.FirstOrDefault(part =>
+                    System.Text.RegularExpressions.Regex.IsMatch(part, @"^\d+\s*勝\s*/\s*\d+\s*敗$"));
+                if (name != null && tally != null)
                 {
-                    var binding = node?.replaceParam;
-                    if (binding != null && binding.TryGetValue(key, out var bound)
-                        && RankedHistoryPolicy.ListPath(bound?.ToString()) != null)
-                    {
-                        var row = Il2CppYgomSystem.Utility.ClientWork.getByJsonPath(bound.ToString())
-                            ?.TryCast<Il2CppSystem.Collections.Generic.Dictionary<string, Il2CppSystem.Object>>();
-                        string ReadBound(string field) => row != null && row.TryGetValue(field, out var value)
-                            ? LabelExtractor.StripRichText(value?.ToString() ?? "") : "";
-                        string rank = ReadBound("rank");
-                        string name = ReadBound("uname");
-                        string time = ReadBound("time");
-                        if (rank.StartsWith("DLv.", StringComparison.Ordinal)
-                            && !string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(time))
-                            return Loc.Get("ranked_history_entry", Loc.Get("ranked_history_context",
-                                name, Loc.Get(RankedHistoryPolicy.ResultKey(ReadBound("result"))), time, rank));
-                    }
+                    string lastSeen = rowText.FirstOrDefault(part =>
+                        System.Text.RegularExpressions.Regex.IsMatch(part, @"^(?:\d+\s*(?:分鐘?|小時|天|秒)前|線上|離線)$"));
+                    return Loc.Get("ranked_history_entry", string.Join("，",
+                        new[] { name, rank, lastSeen, tally }.Where(part => !string.IsNullOrWhiteSpace(part))));
+                }
+                if (name != null && time != null && name != time)
+                {
+                    var results = go.GetComponentsInChildren<Image>(false)
+                        .Select(image => image.sprite?.name switch
+                        {
+                            "GUI_T_PvpRecordIcon1_Win" => "Win",
+                            "GUI_T_PvpRecordIcon1_Lose" => "Lose",
+                            "GUI_T_PvpRecordIcon1_Draw" => "Draw",
+                            _ => null
+                        }).Where(result => result != null).Distinct().ToArray();
+                    string resultKey = RankedHistoryPolicy.ResultKey(results.Length == 1 ? results[0] : null);
+                    string rowContext = rank == null
+                        ? string.Join(", ", name, Loc.Get(resultKey), time)
+                        : Loc.Get("ranked_history_context", name, Loc.Get(resultKey), time, rank);
+                    return Loc.Get("ranked_history_entry", rowContext);
                 }
             }
+
             Transform scope = null;
             // The duelist Selectable is itself the row container; the deck
             // control is nested inside it. Include self before walking parents.
@@ -2410,9 +2710,7 @@ namespace DuelLinksAccess
                     {
                         int id = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(path + ".item.id", -1);
                         int count = Il2CppYgomSystem.Utility.ClientWork.getIntByJsonPath(path + ".item.count", -1);
-                        string itemName = null;
-                        try { if (id > 0) itemName = LabelExtractor.StripRichText(Il2CppYgomGame.Utility.ItemUtil.GetName(id)); }
-                        catch { /* Preserve the row's count and threshold with an explicit unknown name. */ }
+                        string itemName = NativeRewardName.FromPath(path + ".item.id");
                         if (string.IsNullOrWhiteSpace(itemName)) itemName = Loc.Get("shop_unknown_item");
                         string amount = count >= 0 ? count.ToString() : Loc.Get("ranked_unknown_quantity");
                         string threshold;
@@ -2550,6 +2848,9 @@ namespace DuelLinksAccess
                             ? Loc.Get("arena_unknown_deck") : deckName);
                     }
                     if (kcStage != null) return kcStage;
+                    string collapseKey = ArenaMenuPolicy.CasualBannerKey(
+                        name == Loc.Get("arena_casual"), ArenaPageHasDuelControl(path));
+                    if (collapseKey != null) return Loc.Get(collapseKey);
                     if (Main.DebugMode && name == null)
                     {
                         var spriteNames = go.GetComponentsInChildren<Image>(true)
@@ -2563,6 +2864,22 @@ namespace DuelLinksAccess
             }
             catch (Exception ex) { DebugLogger.Log(LogCategory.Handler, "Arena", ex.Message); }
             return fallback;
+        }
+
+        private bool ArenaPageHasDuelControl(string bannerPath)
+        {
+            if (_screenRoot == null || _screenRoot.name != "PvpMainMenu") return false;
+            // The banner exists in both states. Its own live page's duel
+            // control identifies the expanded state, without storing a guess
+            // based on which keyboard command was last used.
+            foreach (var node in _screenRoot.GetComponentsInChildren<Il2CppYgomSystem.Htjson.HtjsonNode>(false))
+            {
+                if (node == null || !node.gameObject.activeInHierarchy) continue;
+                var data = node.replaceParam;
+                if (data != null && data.TryGetValue("%btnpath%", out var value)
+                    && value?.ToString() == bannerPath + ".data.page.button.duel") return true;
+            }
+            return false;
         }
 
         private static void RevealArenaItem(GameObject go)
@@ -2656,6 +2973,10 @@ namespace DuelLinksAccess
                 }
                 return;
             }
+
+            if (_focusIndex >= 0 && _focusIndex < _items.Count && _items[_focusIndex].ReadDetails != null
+                && InputManager.TryConsumeKeyDown(KeyCode.V))
+            { _items[_focusIndex].ReadDetails(); return; }
 
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
             {
@@ -2821,6 +3142,7 @@ namespace DuelLinksAccess
 
             int pos = _focusIndex + 1;
             if (_screenRoot != null && _screenRoot.name == "PvpMainMenu") RevealArenaItem(item.Go);
+            if (_screenRoot?.name == "DeckSelect") RevealDeckSelection(item.Go);
             int total = _items.Count;
 
             string msg;
@@ -2976,6 +3298,7 @@ namespace DuelLinksAccess
             var item = _items[_focusIndex];
             if (item.Type == ItemType.Information)
             {
+                if (item.ReadDetails != null) { item.ReadDetails(); return; }
                 if (item.LiveLabel != null) item.Label = item.LiveLabel() ?? item.Label;
                 ScreenReader.Say(item.Label);
                 return;
@@ -3077,6 +3400,7 @@ namespace DuelLinksAccess
                 {
                     DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                         $"Activating deck item: {item.Label}");
+                    CaptureDeckCopySelection(deckItem, item.Label);
                     deckItem.OnClicked();
                     ScreenReader.Say(item.Label);
                     return;

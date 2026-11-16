@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 using MelonLoader;
@@ -37,6 +37,7 @@ namespace DuelLinksAccess
                 PatchTutorialManagerNotificator(harmony);
                 SummonDiagnostics.Register(harmony);
                 CharacterPortraitBindings.Register(harmony);
+                DeckSaveFeedback.Register(harmony);
 
                 _applied = HarmonyPatchPolicy.RequiredPatchesApplied(
                     push, pop, runEffect);

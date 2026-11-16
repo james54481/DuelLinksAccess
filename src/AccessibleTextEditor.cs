@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using MelonLoader;
 using UnityEngine.UI;
 
@@ -12,20 +12,31 @@ namespace DuelLinksAccess
         private static Action _onApplied;
 
         internal static void Open(InputField input, bool playerName, Func<bool> isCurrent, Action onApplied = null)
+            => Open(input, playerName ? TextEditPurpose.PlayerName : TextEditPurpose.FriendSearch, isCurrent, onApplied);
+
+        internal static void Open(InputField input, TextEditPurpose purpose, Func<bool> isCurrent, Action onApplied = null)
         {
             if (_pending != null || input == null) return;
+            DebugLogger.Log(LogCategory.Handler, "TextEditor", $"Opening purpose={purpose}");
+            bool playerName = purpose == TextEditPurpose.PlayerName;
+            string title = purpose == TextEditPurpose.DeckSearch ? Loc.Get("deck_search_deck_title")
+                : purpose == TextEditPurpose.CardSearch ? Loc.Get("deck_search_editor_title")
+                : playerName ? "玩家名稱輸入" : "好友搜尋";
+            string fieldName = purpose == TextEditPurpose.DeckSearch ? Loc.Get("deck_search_deck_field")
+                : purpose == TextEditPurpose.CardSearch ? Loc.Get("deck_search_editor_field")
+                : playerName ? "玩家名稱" : "玩家名稱或決鬥者 ID";
             string initial = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(input.text ?? ""));
             string script = @"
 Add-Type -AssemblyName System.Windows.Forms
 $form = New-Object Windows.Forms.Form
-$form.Text = '" + (playerName ? "玩家名稱輸入" : "好友搜尋") + @"'
+$form.Text = '" + title.Replace("'", "''") + @"'
 $form.Width = 420
 $form.Height = 140
 $form.StartPosition = 'CenterScreen'
 $form.TopMost = $true
 $box = New-Object Windows.Forms.TextBox
-$box.AccessibleName = '" + (playerName ? "玩家名稱" : "玩家名稱或決鬥者 ID") + @"'
-$box.MaxLength = " + (input.characterLimit > 0 ? input.characterLimit : (playerName ? 12 : 32767)) + @"
+$box.AccessibleName = '" + fieldName.Replace("'", "''") + @"'
+$box.MaxLength = " + TextEditorPolicy.MaximumLength(purpose, input.characterLimit) + @"
 $box.SetBounds(12,12,375,24)
 $box.Text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + initial + @"'))
 $ok = New-Object Windows.Forms.Button
@@ -39,7 +50,7 @@ $cancel.SetBounds(292,48,95,26)
 $form.Controls.AddRange(@($box,$ok,$cancel))
 $form.AcceptButton = $ok
 $form.CancelButton = $cancel
-$minimum = " + (playerName ? 3 : 0) + @"
+$minimum = " + TextEditorPolicy.MinimumLength(purpose) + @"
 if ($minimum -gt 0) {
     $box.AccessibleDescription = '請輸入 3 至 12 個字元'
     $ok.Enabled = $box.Text.Trim().Length -ge $minimum
@@ -93,9 +104,8 @@ try {
                 MelonLogger.Warning($"[TextEditor] Search editor failed: {completed.Exception?.GetBaseException().Message}");
                 return;
             }
-            if (completed.Result == null || isCurrent?.Invoke() != true
-                || input == null || !input.gameObject.activeInHierarchy)
-                return;
+            if (!TextEditorPolicy.CanApply(completed.Result, isCurrent?.Invoke() == true,
+                input != null && input.gameObject.activeInHierarchy)) return;
             input.text = completed.Result;
             onApplied?.Invoke();
         }

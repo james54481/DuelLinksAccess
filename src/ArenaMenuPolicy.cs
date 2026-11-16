@@ -88,6 +88,9 @@ namespace DuelLinksAccess
             };
         }
 
+        internal static string CasualBannerKey(bool isCasual, bool pageOpen)
+            => isCasual && pageOpen ? "arena_casual_collapse" : null;
+
         // Server list positions are identities for this scan, never mode names.
         public static bool IsBannerPath(string path)
         {

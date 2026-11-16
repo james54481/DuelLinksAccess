@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace DuelLinksAccess
 {
@@ -25,6 +25,10 @@ namespace DuelLinksAccess
             string name, bool fromDialogManager)
         {
             if (string.IsNullOrEmpty(name)) return GameScreen.Other;
+
+            // The editor's modal menu contains "Deck" but must take keyboard
+            // ownership from the underlying DeckEdit handler.
+            if (name == "DeckMenu" && fromDialogManager) return GameScreen.Dialog;
 
             GameScreen screen = ClassifyName(name);
             if (screen == GameScreen.Other && fromDialogManager)

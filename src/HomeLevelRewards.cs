@@ -91,6 +91,8 @@ namespace DuelLinksAccess
                             names.Add(CardFormatter.GetName(card.iid.GetMrk()));
                     foreach (var image in row.GetComponentsInChildren<Image>(false))
                     {
+                        string ticketKey = RewardIdentityPolicy.SpriteKey(image.sprite?.name);
+                        if (ticketKey != null) names.Add(Loc.Get(ticketKey));
                         int? id = GateCostPolicy.ItemId(image.sprite?.name);
                         if (id.HasValue) names.Add(LabelExtractor.StripRichText(Il2CppYgomGame.Utility.ItemUtil.GetName(id.Value)));
                     }

@@ -1,10 +1,15 @@
-using Xunit;
+﻿using Xunit;
 
 namespace DuelLinksAccess.Tests;
 
 public sealed class ScreenClassificationPolicyTests
 {
     [Theory]
+    [InlineData("DeckMenu", true, GameScreen.Dialog)]
+    [InlineData("DeckMenu", false, GameScreen.Deck)]
+    [InlineData("DeckEdit_PC", false, GameScreen.Deck)]
+    [InlineData("DeckRecipe", false, GameScreen.Deck)]
+    [InlineData("DrawTest", true, GameScreen.Dialog)]
     [InlineData("DuelClient", false, GameScreen.Duel)]
     [InlineData("DuelCommonDialog", false, GameScreen.Dialog)]
     [InlineData("UnmappedRewardView", true, GameScreen.Dialog)]

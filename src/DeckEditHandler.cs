@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using MelonLoader;
 using UnityEngine;
@@ -11,7 +11,7 @@ namespace DuelLinksAccess
     /// Provides navigation through deck contents and card collection,
     /// card detail reading, and programmatic add/remove (bypassing drag gestures).
     /// </summary>
-    public class DeckEditHandler
+    public partial class DeckEditHandler
     {
         #region Types
 
@@ -94,6 +94,7 @@ namespace DuelLinksAccess
                 return;
             }
 
+            RefreshAfterOperation();
             ProcessInput();
         }
 
@@ -103,6 +104,8 @@ namespace DuelLinksAccess
 
         private void Activate(DeckEdit2ViewController vc, string goName)
         {
+            _operationMenuOpen = false;
+            _refreshOperationAt = 0f;
             _vc = vc;
             _lastVcGoName = goName;
             _wasActive = true;
@@ -242,6 +245,8 @@ namespace DuelLinksAccess
 
         private void Deactivate()
         {
+            _operationMenuOpen = false;
+            _refreshOperationAt = 0f;
             _wasActive = false;
             IsActive = false;
             _vc = null;
@@ -386,6 +391,7 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            if (ProcessOperationMenu()) return;
             // Tab / Shift+Tab — switch zone
             if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
@@ -870,8 +876,13 @@ namespace DuelLinksAccess
         {
             try
             {
+                if (_vc == null || TryGetDeckEditVC()?.Pointer != _vc.Pointer) return;
+                if (!_vc.saveNeeded())
+                {
+                    ScreenReader.Say(Loc.Get("deck_save_no_changes"));
+                    return;
+                }
                 _vc.saveCommon(DeckEdit2ViewController.SAVEFOR.Save);
-                ScreenReader.Say(Loc.Get("deck_saved"));
             }
             catch (Exception ex)
             {
@@ -1015,18 +1026,43 @@ namespace DuelLinksAccess
         {
             RefreshDeckLists();
 
-            int mainMax = 30;
-            int extraMax = 5;
             try
             {
-                mainMax = DeckInfo.MainDeckMaxNum(false);
-                extraMax = DeckInfo.ExtraDeckMaxNum(false);
+                bool rush = _vc.isRush;
+                ScreenReader.Say(Loc.Get(rush ? "deck_stats_rush" : "deck_stats_speed"));
+                int mainMin = DeckInfo.MainDeckMinNum(rush);
+                int mainMax = DeckInfo.MainDeckMaxNum(rush);
+                int extraMax = DeckInfo.ExtraDeckMaxNum(rush);
+                ScreenReader.SayQueued(Loc.Get("deck_stats_limits", _mainDeckMrks.Count, mainMin, mainMax, _extraDeckMrks.Count, extraMax));
+            }
+            catch
+            {
+                ScreenReader.Say(Loc.Get("deck_stats_limits_unknown", _mainDeckMrks.Count, _extraDeckMrks.Count));
+            }
+            int monsters = 0, spells = 0, traps = 0, unknown = 0;
+            foreach (int mrk in _mainDeckMrks)
+            {
+                try
+                {
+                    var content = Il2CppYgomGame.Card.Content.Instance;
+                    if (content == null || string.IsNullOrWhiteSpace(content.GetName(mrk))) { unknown++; continue; }
+                    var kind = content.GetKind(mrk);
+                    if (kind == Il2CppYgomGame.Card.Content.Kind.Magic) spells++;
+                    else if (kind == Il2CppYgomGame.Card.Content.Kind.Trap) traps++;
+                    else if (CardFormatter.IsMonsterKind(kind)) monsters++;
+                    else unknown++;
+                }
+                catch { unknown++; }
+            }
+            ScreenReader.SayQueued(unknown > 0
+                ? Loc.Get("deck_stats_categories", monsters, spells, traps, unknown)
+                : Loc.Get("deck_stats_categories_known", monsters, spells, traps));
+            try
+            {
+                string skill = _vc.deckHeader?.skillName?.text;
+                ScreenReader.SayQueued(string.IsNullOrWhiteSpace(skill) ? Loc.Get("deck_no_skill") : Loc.Get("deck_skill", skill));
             }
             catch { }
-
-            ScreenReader.Say(Loc.Get("deck_stats",
-                _mainDeckMrks.Count, mainMax,
-                _extraDeckMrks.Count, extraMax));
             AnnounceDeckOwner();
         }
 

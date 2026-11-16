@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using MelonLoader;
@@ -103,6 +103,7 @@ namespace DuelLinksAccess
             public Func<string> UnavailableReason; // native disabled state, read again at activation
             public bool DeferredActivationLabel; // native checkbox updates after click dispatch
             public Action<int> AdjustChoice;
+            public Action ReadDetails;
         }
 
         #endregion
@@ -115,6 +116,8 @@ namespace DuelLinksAccess
         /// </summary>
         public void Update()
         {
+            PollDeckTrialRefresh();
+            PollCardSearchKeyboard();
             AccessibleTextEditor.Poll();
             if (GameStateTracker.CurrentScreen != GameScreen.Dialog)
             {
@@ -147,6 +150,8 @@ namespace DuelLinksAccess
             // New dialog appeared or stacked dialog changed — start delayed scan
             if (vcChanged)
             {
+                _deckFilterFocusGo = null;
+                _deckFilterFocusRoot = null;
                 _lastDialogName = currentName;
                 _lastDialogInstanceId = currentInstanceId;
                 _scanned = false;
@@ -304,10 +309,13 @@ namespace DuelLinksAccess
 
                 // Read and announce dialog text first (Say to interrupt "Dialog" announcement).
                 // Skip re-announcing identical text on retry scans.
+                bool reportFilterSelection = _deckFilterFocusRoot == dialogRoot && _deckFilterFocusGo != null;
                 bool reportIconSelection = _playerIconRefreshRoot == dialogRoot;
                 _playerIconRefreshRoot = null;
-                string dialogText = ReadDialogText(dialogRoot);
-                if (!reportIconSelection && FindSettings(dialogRoot) == null && !string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
+                string dialogText = dialogRoot.GetComponent<Il2CppYgomGame.Deck.DrawTestViewController>() != null
+                    ? Loc.Get("deck_trial_help") : ReadDialogText(dialogRoot);
+                dialogText = DeckCopySpeech.Confirmation(GetTopVcRoot("content"), dialogText);
+                if (!reportFilterSelection && !reportIconSelection && FindSettings(dialogRoot) == null && !string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                 {
                     AnnounceDialogText(dialogText);
                 }
@@ -319,6 +327,8 @@ namespace DuelLinksAccess
                 FindButtons(dialogRoot);
 
                 AddPurchaseControls(dialogRoot);
+                AddExTraderEntries(dialogRoot);
+                AddOpenPackControl(dialogRoot);
 
                 // Find section headers (e.g. "Character Unlock Missions", "Stage Missions")
                 // and insert them in DOM order among the button items
@@ -327,6 +337,7 @@ namespace DuelLinksAccess
                 // Character list / filter dialog: replace the bare "LV: 23"
                 // cell labels with character names resolved from the VC's data
                 ApplyCharaFilterLabels(dialogRoot);
+                ApplyTutorialCharacterChoices(dialogRoot);
 
                 // Deck accessory dialogs (sleeve / mat / ace card): name the
                 // image-only grid cells and preview buttons from the VC data
@@ -336,6 +347,10 @@ namespace DuelLinksAccess
                 // their current selected state and the deck-size/advanced
                 // controls from the VC's own live data
                 ApplyAutoDeckLabels(dialogRoot);
+                ApplyDeckFilterLabels(dialogRoot);
+                ApplyCardSearchInput(dialogRoot);
+                ApplyNativeDeckMenu(dialogRoot);
+                ApplyDeckTrial(dialogRoot);
                 ApplySettingsItems(dialogRoot);
                 ApplyTitleDisplaySettings(dialogRoot);
                 ApplyGuideBingoTabs(dialogRoot);
@@ -383,6 +398,7 @@ namespace DuelLinksAccess
                 // Collapse duplicate Htjson list rows (missions, reward lists)
                 // and give their Info buttons row context before reporting.
                 if (_settingsVc == null) TidyHtjsonListItems();
+                ApplyFriendReplayLabel(dialogRoot, dialogText);
                 ApplyBoostItemLabels(dialogRoot);
                 ApplyChronicleItemLabels(dialogRoot);
                 AddSkillCostRows(dialogRoot);
@@ -403,6 +419,17 @@ namespace DuelLinksAccess
                 MelonLogger.Msg($"[Dialog] Found {_items.Count} interactive items");
 
                 _dialogRoot = dialogRoot;
+                if (reportFilterSelection && _items.Count > 0)
+                {
+                    int focus = _items.FindIndex(it => it.Go == _deckFilterFocusGo);
+                    _deckFilterFocusGo = null;
+                    _deckFilterFocusRoot = null;
+                    _textMode = false;
+                    _lastDialogText = dialogText;
+                    if (focus >= 0) _focusIndex = focus;
+                    AnnounceCurrentItem();
+                    return;
+                }
                 if (reportIconSelection && _items.Count > 0)
                 {
                     _textMode = false;
@@ -415,7 +442,7 @@ namespace DuelLinksAccess
                 // If dialog has tabs, announce the active tab name
                 string activeTabName = _settingsVc == null ? GetActiveTabName(dialogRoot) : null;
                 if (activeTabName != null)
-                    ScreenReader.SayQueued(activeTabName + " tab");
+                    ScreenReader.SayQueued(IsDeckFilter(dialogRoot) ? Loc.Get("deck_filter_tab", activeTabName) : activeTabName + " tab");
 
                 // Debug: dump non-button text elements and datapaths to discover
                 // category headers and mission data structure
@@ -428,7 +455,8 @@ namespace DuelLinksAccess
                     ScreenReader.SayQueued(Loc.Get("dialog_buttons", _items.Count));
                     if (focusNameConfirmation)
                     {
-                        int confirm = _items.FindIndex(item => item.Type == ItemType.Button && item.Label == "確定");
+                        int confirm = _items.FindIndex(item => item.Type == ItemType.Button
+                            && PlayerNameDialogPolicy.IsConfirmation(item.Label));
                         if (confirm >= 0) _focusIndex = confirm;
                     }
                     AnnounceCurrentItem(queued: true);
@@ -459,6 +487,33 @@ namespace DuelLinksAccess
         /// Debug: dumps text elements and HtjsonNode datapaths to discover
         /// mission category headers and grouping structure.
         /// </summary>
+        private void ApplyFriendReplayLabel(GameObject root, string dialogText)
+        {
+            // Only the friend-info popup; retain the actual native replay button/action.
+            if (dialogText == null || !dialogText.Contains("好友資訊", StringComparison.Ordinal)
+                || !_items.Any(item => item.Label == "刪除好友")) return;
+            foreach (var item in _items)
+            {
+                if (item.Type != ItemType.Button || item.Label != "重溫") continue;
+                string mode = null;
+                foreach (var image in root.GetComponentsInChildren<Image>(false))
+                {
+                    string sprite = image.sprite?.name;
+                    string candidate = sprite switch
+                    {
+                        "GUI_T_RuleIcon1_1" or "GUI_T_RuleIcon3_1" => Loc.Get("profile_speed"),
+                        "GUI_T_RuleIcon3_2" => Loc.Get("profile_rush"),
+                        _ => null
+                    };
+                    if (candidate == null) continue;
+                    if (mode != null && mode != candidate) { mode = null; break; }
+                    mode = candidate;
+                }
+                item.Label = mode == null ? Loc.Get("friend_favorite_replay")
+                    : Loc.Get("friend_favorite_replay_mode", mode);
+            }
+        }
+
         private void DumpCategoryStructure(GameObject root)
         {
             try
@@ -1009,6 +1064,131 @@ namespace DuelLinksAccess
             {
                 MelonLogger.Msg($"[Dialog] ApplyCharaFilterLabels error: {ex.Message}");
             }
+        }
+
+        // james54481, 2026-11-06: tutorial choices are native DummyButtons,
+        // not the later CharaFilter character list. Never infer identities by index.
+        // james54481, 2026-11-07: EX-trader selectors use real Buttons named
+        // "vl", which the generic layout filter intentionally skips elsewhere.
+        // james54481, 2026-11-07: OpenPack uses a 3D pointer surface rather
+        // than a visible Unity button. Keep this separate from trade callbacks.
+        private float _openPackNextInput;
+        private void AddOpenPackControl(GameObject root)
+        {
+            if (root == null || root.name != "OpenPack") return;
+            var component = root.GetComponent<Il2CppYgomSystem.UI.ViewController>();
+            if (component == null) return;
+            var vc = new Il2CppYgomGame.OpenPack.OpenPackViewController(component.Pointer);
+            // Hidden template buttons and unrevealed card text are not controls.
+            _items.Clear();
+            _items.Add(new DialogItem
+            {
+                Go = root, Label = Loc.Get("open_pack_continue"), Type = ItemType.Button,
+                NativeAction = () =>
+                {
+                    if (root != _dialogRoot || !root.activeInHierarchy
+                        || GetTopVcInstanceId("dialog") != root.GetInstanceID()
+                        || Time.unscaledTime < _openPackNextInput) return;
+                    var events = UnityEngine.EventSystems.EventSystem.current;
+                    if (events == null) return;
+                    _openPackNextInput = Time.unscaledTime + 0.75f;
+                    var data = new UnityEngine.EventSystems.PointerEventData(events)
+                    {
+                        button = UnityEngine.EventSystems.PointerEventData.InputButton.Left,
+                        position = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f)
+                    };
+                    vc.OnPointerClick(data);
+                    MelonLogger.Msg("[OpenPack] Requested native pointer advance; no trade callback invoked");
+                    _postActivationRescanDelay = 0.75f;
+                }
+            });
+        }
+
+        private void AddExTraderEntries(GameObject root)
+        {
+            if (root == null || root.name != "HtjsonDialog"
+                || !AccessibleUiText.ReadParts(root).Contains("交易商 EX")) return;
+            int added = 0;
+            foreach (var button in root.GetComponentsInChildren<Button>(false))
+            {
+                if (button == null || !button.IsInteractable() || button.gameObject.name != "vl"
+                    || button.transform.parent?.name != "ScrollContent") continue;
+                string label = AccessibleUiText.Read(button.gameObject);
+                if (string.IsNullOrWhiteSpace(label)) continue;
+                _items.RemoveAll(item => item.Go == button.gameObject);
+                _items.Insert(added++, new DialogItem
+                {
+                    Go = root, Label = label, Type = ItemType.Button,
+                    NativeAction = () =>
+                    {
+                        if (root != _dialogRoot || !LabelExtractor.IsAlive(button.gameObject)
+                            || !button.gameObject.activeInHierarchy || !button.IsInteractable()) return;
+                        var rect = button.transform.TryCast<RectTransform>();
+                        var events = UnityEngine.EventSystems.EventSystem.current;
+                        if (rect == null || events == null) return;
+                        var canvas = button.GetComponentInParent<Canvas>();
+                        var camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay
+                            ? canvas.worldCamera : null;
+                        var data = new UnityEngine.EventSystems.PointerEventData(events)
+                        {
+                            position = RectTransformUtility.WorldToScreenPoint(camera, rect.TransformPoint(rect.rect.center)),
+                            button = UnityEngine.EventSystems.PointerEventData.InputButton.Left
+                        };
+                        var hits = new Il2CppSystem.Collections.Generic.List<UnityEngine.EventSystems.RaycastResult>();
+                        events.RaycastAll(data, hits);
+                        if (hits.Count == 0 || hits[0].gameObject == null
+                            || !hits[0].gameObject.transform.IsChildOf(rect))
+                        {
+                            ScreenReader.Say(Loc.Get("dialog_click_error"));
+                            return;
+                        }
+                        data.pointerCurrentRaycast = hits[0];
+                        MelonLogger.Msg($"[ExTraderEntry] Native click: {label}");
+                        UnityEngine.EventSystems.ExecuteEvents.ExecuteHierarchy(hits[0].gameObject, data,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerDownHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.ExecuteHierarchy(hits[0].gameObject, data,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerUpHandler);
+                        UnityEngine.EventSystems.ExecuteEvents.ExecuteHierarchy(hits[0].gameObject, data,
+                            UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
+                    }
+                });
+            }
+            if (added > 0) MelonLogger.Msg($"[ExTraderEntry] Added {added} native activity entries");
+        }
+
+        private void ApplyTutorialCharacterChoices(GameObject root)
+        {
+            if (root == null || root.name != "TutorialChara") return;
+            var component = root.GetComponent<Il2CppYgomSystem.UI.ViewController>();
+            if (component == null) return;
+            var vc = new Il2CppYgomGame.Menu.TutorialCharaSelectViewController(component.Pointer);
+            int ordinal = 0;
+            foreach (var item in _items)
+            {
+                if (item.Go == null || item.Go.name != "DummyButton") continue;
+                var button = item.Go.GetComponent<Button>();
+                if (button == null) continue;
+                int number = ++ordinal;
+                string knownName = null;
+                int? knownCid = null;
+                item.Go = root; // NativeAction validates the current dialog instance.
+                item.LiveLabel = () => knownName == null ? Loc.Get("tutorial_character_option", number)
+                    : vc.cid == knownCid ? Loc.Get("deck_auto_selected", knownName) : knownName;
+                item.Label = item.LiveLabel();
+                item.NativeAction = () =>
+                {
+                    if (!LabelExtractor.IsAlive(button.gameObject) || !button.IsInteractable()) return;
+                    button.onClick.Invoke(); // Preserve the game's own bound identity.
+                    knownCid = vc.cid;
+                    knownName = ResolveCharaName(vc.cid);
+                    MelonLogger.Msg($"[TutorialCharacter] option={number} selectedCid={vc.cid} name={knownName ?? "UNKNOWN"}");
+                    ScreenReader.Say(knownName == null ? Loc.Get("tutorial_character_unknown")
+                        : Loc.Get("deck_auto_selected", knownName));
+                };
+            }
+            // Submit remains a separate native button and a deliberate user action.
+            foreach (var image in root.GetComponentsInChildren<Image>(false))
+                DebugLogger.Log(LogCategory.Handler, "TutorialCharacter", $"Image: {image.gameObject.name} sprite={image.sprite?.name}");
         }
 
         private void BuildCharacterChoices(
@@ -2022,6 +2202,12 @@ namespace DuelLinksAccess
         private void ProcessInput()
         {
             PollBoostActivationLabel();
+            if (InputManager.TryConsumeKeyDown(KeyCode.V) && _focusIndex >= 0 && _focusIndex < _items.Count
+                && _items[_focusIndex].ReadDetails != null)
+            {
+                _items[_focusIndex].ReadDetails();
+                return;
+            }
             if (_characterSelectionBusy) return;
             // Text mode: no buttons, just text — Enter/Space to dismiss
             if (_textMode)
@@ -2198,7 +2384,7 @@ namespace DuelLinksAccess
         }
 
         private static bool IsPlayerNameDialog(GameObject root) =>
-            root != null && AccessibleUiText.ReadParts(root).Contains("玩家名稱輸入");
+            root != null && PlayerNameDialogPolicy.IsMatch(root.name, AccessibleUiText.Read(root));
 
         private void ActivateCurrentItem()
         {
@@ -2229,8 +2415,7 @@ namespace DuelLinksAccess
                 return;
             }
 
-            if (item.Go.name == "WrapInputField(Clone)" && _dialogRoot != null
-                && AccessibleUiText.Read(_dialogRoot).Contains("玩家名稱輸入", StringComparison.Ordinal))
+            if (item.Go.name == "WrapInputField(Clone)" && IsPlayerNameDialog(_dialogRoot))
             {
                 var input = item.Go.GetComponentInChildren<InputField>(false);
                 if (input != null && input.interactable)
@@ -2410,7 +2595,13 @@ namespace DuelLinksAccess
                         UnityEngine.EventSystems.ExecuteEvents.pointerClickHandler);
                 }
 
-                if (item.DeferredActivationLabel)
+                bool deckFilterTab = IsDeckFilter(_dialogRoot) && IsTabButton(item.Go);
+                if (deckFilterTab)
+                {
+                    _deckFilterFocusGo = item.Go;
+                    _deckFilterFocusRoot = _dialogRoot;
+                }
+                else if (item.DeferredActivationLabel)
                     QueueBoostActivationLabel(item);
                 else
                     ScreenReader.Say(item.Label);
