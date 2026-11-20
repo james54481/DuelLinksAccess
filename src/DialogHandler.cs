@@ -89,7 +89,7 @@ namespace DuelLinksAccess
 
         #region Types
 
-        private enum ItemType { Button, Slider, Header, Other }
+        private enum ItemType { Button, Slider, Header, Other, Information }
 
         private class DialogItem
         {
@@ -197,6 +197,8 @@ namespace DuelLinksAccess
                     }
                 }
             }
+
+            PollEventDetailTabs();
 
             // Tab-aware rescan: after clicking a tab button, rescan content
             // even though the VC instanceId hasn't changed
@@ -315,7 +317,7 @@ namespace DuelLinksAccess
                 string dialogText = dialogRoot.GetComponent<Il2CppYgomGame.Deck.DrawTestViewController>() != null
                     ? Loc.Get("deck_trial_help") : ReadDialogText(dialogRoot);
                 dialogText = DeckCopySpeech.Confirmation(GetTopVcRoot("content"), dialogText);
-                if (!reportFilterSelection && !reportIconSelection && FindSettings(dialogRoot) == null && !string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
+                if (!reportFilterSelection && !reportIconSelection && !HasEventDetailTabs(dialogRoot) && !IsEventGachaRewardList(dialogRoot) && !IsEventGachaReceipt(dialogRoot) && FindSettings(dialogRoot) == null && !string.IsNullOrEmpty(dialogText) && dialogText != _lastDialogText)
                 {
                     AnnounceDialogText(dialogText);
                 }
@@ -325,6 +327,7 @@ namespace DuelLinksAccess
 
                 // Find clickable buttons in the dialog hierarchy
                 FindButtons(dialogRoot);
+                AddRouletteDifficultyButtons(dialogRoot);
 
                 AddPurchaseControls(dialogRoot);
                 AddExTraderEntries(dialogRoot);
@@ -398,12 +401,18 @@ namespace DuelLinksAccess
                 // Collapse duplicate Htjson list rows (missions, reward lists)
                 // and give their Info buttons row context before reporting.
                 if (_settingsVc == null) TidyHtjsonListItems();
+                AddEventGachaRewardList(dialogRoot);
+                AddEventGachaReceipt(dialogRoot);
                 ApplyFriendReplayLabel(dialogRoot, dialogText);
                 ApplyBoostItemLabels(dialogRoot);
                 ApplyChronicleItemLabels(dialogRoot);
                 AddSkillCostRows(dialogRoot);
                 TidyGateSwitchItems(dialogRoot);
                 TidyGateRewardRateItems(dialogRoot);
+                // Scrollbars and their handles are not separate keyboard
+                // destinations. Keep the native scroll view and real sliders.
+                _items.RemoveAll(item => item.Go != null
+                    && (item.Go.GetComponentInParent<Scrollbar>() != null || item.Go.name == "Scrollbar"));
                 if (IsPlayerNameDialog(dialogRoot)
                     || (dialogText.Contains("死亡導遊", StringComparison.Ordinal)
                         && dialogText.Contains("賓果", StringComparison.Ordinal)))
@@ -1525,34 +1534,14 @@ namespace DuelLinksAccess
 
         private void ApplyGuideBingoTabs(GameObject root)
         {
-            if (GetTopVcRoot("content")?.name != "DDGuide") return;
-
-            var tabs = new List<(RectTransform Rect, string Label, bool Selected)>();
-            foreach (var tab in root.GetComponentsInChildren<Il2CppYgomSystem.UI.YgomTabButton>(false))
-            {
-                var label = tab.isSelected ? tab.selectLabel ?? tab.normalLabel : tab.normalLabel;
-                string name = LabelExtractor.StripRichText(label?.text ?? "").Trim();
-                if ((name == "遊戲玩法" || name == "推薦獎勵")
-                    && tab.transform.TryCast<RectTransform>() is RectTransform rect)
-                    tabs.Add((rect, name, tab.isSelected));
-            }
-            if (tabs.Count != 2)
-            {
-                tabs.Clear();
-                foreach (var rect in root.GetComponentsInChildren<RectTransform>(false))
-                {
-                    var normal = rect.Find("Normal");
-                    var selected = rect.Find("Select");
-                    if (normal == null || selected == null) continue;
-                    bool active = selected.gameObject.activeInHierarchy;
-                    string name = AccessibleUiText.Read((active ? selected : normal).gameObject);
-                    if (name == "遊戲玩法" || name == "推薦獎勵")
-                        tabs.Add((rect, name, active));
-                }
-            }
+            var tabs = ReadEventDetailTabs(root);
             if (tabs.Count != 2 || tabs[0].Label == tabs[1].Label) return;
+            _eventDetailTabRoot = root;
+            _eventDetailSelectedTab = tabs.Find(tab => tab.Selected).Label;
+            AddEventDetailParagraphs(root);
             _items.RemoveAll(item => item.Go != null && item.Go.name == "Scrollbar");
-            if (tabs.Any(tab => tab.Selected && tab.Label == "推薦獎勵"))
+            if (GetTopVcRoot("content")?.name == "DDGuide"
+                && tabs.Any(tab => tab.Selected && tab.Label == "推薦獎勵"))
                 ApplyGuideBingoRewardLabels(root);
 
             _items.RemoveAll(item => item.Go != null && tabs.Any(tab => item.Go.transform.IsChildOf(tab.Rect)));
@@ -1567,6 +1556,11 @@ namespace DuelLinksAccess
                     Type = ItemType.Button,
                     NativeAction = () =>
                     {
+                        if (tab.Selected)
+                        {
+                            ScreenReader.Say(Loc.Get("friend_tab_selected", tab.Label));
+                            return;
+                        }
                         if (!ClickDialogTab(tab.Rect)) return;
                         _pendingPlayerIconTab = tab.Rect;
                         _playerIconRefreshRoot = root;
@@ -2284,7 +2278,7 @@ namespace DuelLinksAccess
             else if (InputManager.TryConsumeKeyDown(KeyCode.Tab))
             {
                 if (_focusIndex >= 0 && _focusIndex < _items.Count
-                    && _items[_focusIndex].LiveLabel != null)
+                    && (_items[_focusIndex].LiveLabel != null || _items[_focusIndex].Type == ItemType.Information))
                 {
                     AnnounceCurrentItem();
                     return;
@@ -2391,6 +2385,8 @@ namespace DuelLinksAccess
             if (_focusIndex < 0 || _focusIndex >= _items.Count) return;
 
             var item = _items[_focusIndex];
+            if (item.Type == ItemType.Information)
+            { ScreenReader.Say(item.Label); return; }
 
             if (!LabelExtractor.IsAlive(item.Go))
             {

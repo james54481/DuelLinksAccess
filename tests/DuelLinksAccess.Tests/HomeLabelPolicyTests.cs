@@ -17,7 +17,7 @@ public class HomeLabelPolicyTests
     [InlineData("Home", "38", null, null)]
     [InlineData("Other", "MenuButton", null, null)]
     [InlineData("Single", "ArrowL", null, "home_area_left")]
-    [InlineData("Single", "YgomButton", "GeneralInfomationButton", "home_events")]
+    [InlineData("Single", "YgomButton", "GeneralInfomationButton", "home_information")]
     [InlineData("Single", "YgomButton", "Other", null)]
     [InlineData("Gate", "ArrowL", null, null)]
     [InlineData("Other", "PresentButton", null, null)]

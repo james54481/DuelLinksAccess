@@ -17,7 +17,7 @@ namespace DuelLinksAccess
                 _ => null
             };
             if (view != "Single") return null;
-            if (name == "YgomButton" && parent == "GeneralInfomationButton") return "home_events";
+            if (name == "YgomButton" && parent == "GeneralInfomationButton") return "home_information";
             return name switch
             {
                 "ArrowL" => "home_area_left",

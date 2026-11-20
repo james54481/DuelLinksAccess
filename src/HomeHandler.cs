@@ -83,6 +83,7 @@ namespace DuelLinksAccess
         // the Home screen.
         private bool _sbhFallback;
         private bool _wasActive;
+        private bool _informationWasActive;
 
         // Series-change (world switch) panel. The game moved this to the newer
         // SingleOverLap system: the live panel is Il2CppYgomGame.Single.OverLap
@@ -132,6 +133,13 @@ namespace DuelLinksAccess
             {
                 if (_wasActive) Deactivate();
                 return;
+            }
+
+            if (HomeInformation.OwnsInput()) { _informationWasActive = true; IsActive = false; return; }
+            if (_informationWasActive)
+            {
+                _informationWasActive = false;
+                IsActive = _scanDone && !_sbhFallback;
             }
 
             // Tutorial-arrow policy. In the character panel
@@ -555,13 +563,12 @@ namespace DuelLinksAccess
 
             // Header buttons. Events button shows a badge count when active
             // events / notices are present.
-            string eventsLabel = Loc.Get("home_events");
+            string eventsLabel = Loc.Get("home_information");
             string eventsBadge = ReadChildBadge(view.generalInfomationButton);
             if (!string.IsNullOrEmpty(eventsBadge))
                 eventsLabel = $"{eventsLabel} ({eventsBadge})";
-            AddButton(view.gameObject,
-                "Layer4/SingleHeaderBG/GeneralInfomationButton/YgomButton",
-                "GeneralInfomationButton", eventsLabel);
+            AddButtonByName(view.gameObject, "GeneralInfomationButton", eventsLabel,
+                () => HomeInformation.Open(view));
             AddButton(view.gameObject,
                 "Layer4/SingleHeaderBG/HeaderButtons/PresentButton",
                 "PresentButton", Loc.Get("home_gifts"));

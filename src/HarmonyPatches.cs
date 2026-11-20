@@ -38,6 +38,7 @@ namespace DuelLinksAccess
                 SummonDiagnostics.Register(harmony);
                 CharacterPortraitBindings.Register(harmony);
                 DeckSaveFeedback.Register(harmony);
+                HomeInformation.Register(harmony);
 
                 _applied = HarmonyPatchPolicy.RequiredPatchesApplied(
                     push, pop, runEffect);

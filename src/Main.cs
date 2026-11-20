@@ -17,7 +17,7 @@ using System.Collections;
 //   See docs/technical-reference.md section "CRITICAL: Accessing Game Code"
 // ============================================================================
 
-[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.7", "DuelLinksAccess Team")]
+[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.8", "DuelLinksAccess Team")]
 [assembly: MelonGame("Konami Digital Entertainment Co., Ltd.", "Yu-Gi-Oh! DUEL LINKS")]
 
 namespace DuelLinksAccess
@@ -315,6 +315,8 @@ namespace DuelLinksAccess
             // Dialog handler — also handles duel dialogs (Yes/No, effect selection)
             _dialogHandler?.Update();
             if (_dialogHandler?.IsActive == true) return;
+
+            if (DailyRewardOverlay.Update()) return;
 
             // Safety net: TutorialArrow on dialog stack but screen is not Dialog/Duel.
             // Happens during ScenarioPlayerPart cutscenes — auto-dismiss click-to-continue.

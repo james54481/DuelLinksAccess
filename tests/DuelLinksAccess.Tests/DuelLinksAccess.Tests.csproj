@@ -9,6 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/DailyRewardPolicy.cs" Link="Source/DailyRewardPolicy.cs" />
+    <Compile Include="../../src/HomeInformationPolicy.cs" Link="Source/HomeInformationPolicy.cs" />
     <Compile Include="../../src/TextEditorPolicy.cs" Link="Source/TextEditorPolicy.cs" />
     <Compile Include="../../src/DeckRecipePolicy.cs" Link="Source/DeckRecipePolicy.cs" />
     <Compile Include="../../src/DeckSaveState.cs" Link="Source/DeckSaveState.cs" />
@@ -102,5 +104,17 @@
   <ItemGroup>
     <EmbeddedResource Include="..\..\resources\locales\*.json"
                       LogicalName="DuelLinksAccess.Locales.%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\EventDetailText.cs" Link="Source\EventDetailText.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\RouletteAccessibilityPolicy.cs" Link="Source\RouletteAccessibilityPolicy.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\ScenarioControlPolicy.cs" Link="Source\ScenarioControlPolicy.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\EventGachaPolicy.cs" Link="Source\EventGachaPolicy.cs" />
   </ItemGroup>
 </Project>

@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Xunit;
 
@@ -10,8 +10,8 @@ public sealed class LocalizationCatalogTests
         "Loc\\.Get\\(\\s*\"(?<key>[^\"]+)\"", RegexOptions.Compiled);
 
     [Theory]
-    [InlineData("en", 788)]
-    [InlineData("zh-TW", 788)]
+    [InlineData("en", 833)]
+    [InlineData("zh-TW", 833)]
     public void Catalog_HasNoDuplicateDefinitions(string locale, int count)
     {
         // ReadCatalog rejects duplicate JSON keys rather than silently overwriting.

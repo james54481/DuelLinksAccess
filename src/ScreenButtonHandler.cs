@@ -161,6 +161,8 @@ namespace DuelLinksAccess
             }
 
             string currentVc = GameStateTracker.LastViewControllerName;
+            if (HomeInformation.OwnsInput()) currentVc = "HomeInformation";
+            PollHomeInformation();
             PollDeckCopyTransition(currentVc);
 
             // Resuming after a blocked period (a dialog owned the update
@@ -285,11 +287,12 @@ namespace DuelLinksAccess
 
             AccessibleTextEditor.Poll();
             PollArenaMenu();
+            PollRouletteState();
             if (_noticeReadDelay >= 0f && (_noticeAnchor == null || !_noticeAnchor.activeInHierarchy)) _noticeReadDelay = -1f;
 
             // In text mode, poll for text changes to auto-read new dialogue
             if (IsResultPage) PollResultPage();
-            else if (!PollDownloadContinue() && _textMode) PollTextChanges();
+            else if (!PollDownloadContinue() && (_textMode || ScenarioControlPolicy.IsScenario(_screenRoot?.name))) PollTextChanges();
 
             // Delayed rescan for result screens (after NEXT button animations)
             if (_resultRescanTimer > 0f)
@@ -352,6 +355,7 @@ namespace DuelLinksAccess
             // While the banner changes its layout, do not activate a stale
             // ordinal or let held arrows move the pending focus elsewhere.
             if (_bannerFocusTarget != null) return;
+            if (HomeInformation.Requested && _informationFocus != null && _tabRescanDelay >= 0f) return;
             ProcessInput();
         }
 
@@ -428,6 +432,12 @@ namespace DuelLinksAccess
                 DebugLogger.Log(LogCategory.Handler, "ScreenBtn",
                     $"Scanning: {_screenRoot.name}");
 
+                if (HomeInformation.Requested && _screenRoot == HomeInformation.Root())
+                {
+                    ScanHomeInformation(_screenRoot);
+                    return;
+                }
+
                 // Log VC type for diagnostics (helps identify unknown screens)
                 try
                 {
@@ -481,6 +491,7 @@ namespace DuelLinksAccess
 
                 // Find clickable buttons
                 FindButtons(_screenRoot);
+                AddHomeInformationAccessibility(_screenRoot);
                 HomeBannerAccessibility.Diagnose(_screenRoot);
                 GateDataDiagnostics.Capture(_screenRoot);
                 var gateFilter = GateCharacterEntry.Find(_screenRoot);
@@ -549,6 +560,9 @@ namespace DuelLinksAccess
                 AddStudioMenu(_screenRoot);
                 AddSceneAlbumSeries(_screenRoot);
                 AddSceneAlbumContents(_screenRoot);
+                AddRouletteAccessibility(_screenRoot);
+                AddEventGachaAccessibility(_screenRoot);
+                AddScenarioAccessibility(_screenRoot);
                 AddDeckRecipeLabels(_screenRoot);
                 if (_screenRoot.name == "Home")
                 {
@@ -613,6 +627,7 @@ namespace DuelLinksAccess
                     _arenaSignature = ArenaSignature();
                 if (isResultScreen) { _textMode = false; return; }
                 if (_arenaRefreshing) return;
+                if (RestoreRouletteFocus()) return;
                 if (RestoreDeckSelectionFilterFocus()) return;
                 if (_bannerFocusTarget != null)
                 {
@@ -1923,6 +1938,7 @@ namespace DuelLinksAccess
         /// </summary>
         private GameObject GetActiveScreenRoot()
         {
+            if (HomeInformation.Requested) return HomeInformation.Root();
             try
             {
                 var namedManager = Il2CppYgomSystem.UI.ViewControllerManager.namedManager;
@@ -2945,7 +2961,11 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            if (HandleEventGachaAnimation()) return;
             if (GateRewardBrowser.Handle(_screenRoot)) return;
+            if (ScenarioControlPolicy.IsScenario(_screenRoot?.name)
+                && InputManager.TryConsumeKeyDown(KeyCode.Space))
+            { AdvanceScreen(); return; }
             if (_textMode)
             {
                 ProcessTextModeInput();
@@ -2980,12 +3000,14 @@ namespace DuelLinksAccess
 
             if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.UpArrow))
             {
+                _rouletteFollowControl = false;
                 _focusIndex--;
                 if (_focusIndex < 0) _focusIndex = _items.Count - 1;
                 AnnounceCurrentItem();
             }
             else if (InputManager.TryConsumeKeyDownOrRepeat(KeyCode.DownArrow))
             {
+                _rouletteFollowControl = false;
                 _focusIndex++;
                 if (_focusIndex >= _items.Count) _focusIndex = 0;
                 AnnounceCurrentItem();
@@ -3051,6 +3073,7 @@ namespace DuelLinksAccess
             else if (InputManager.TryConsumeKeyDown(KeyCode.Escape)
                 || InputManager.TryConsumeKeyDown(KeyCode.Backspace))
             {
+                if (HomeInformation.Requested) { HomeInformation.Close(); return; }
                 GoBack();
             }
         }
@@ -3126,7 +3149,8 @@ namespace DuelLinksAccess
             // the cached label still looks like a placeholder, re-resolve it live
             // off the current GameObject so a headline that has since loaded is
             // read instead of the stale placeholder.
-            if (IsWeakLabel(item.Label, item.Go))
+            if (ScenarioControlPolicy.ButtonKey(_screenRoot?.name, item.Go.name) == null
+                && IsWeakLabel(item.Label, item.Go))
             {
                 try
                 {
@@ -3303,6 +3327,8 @@ namespace DuelLinksAccess
                 ScreenReader.Say(item.Label);
                 return;
             }
+            if (TryActivateRouletteControl(item.Go)) return;
+            RememberEventGachaDraw(item.Go);
             if (item.NativeAction != null)
             {
                 if (LabelExtractor.IsAlive(item.Go)) item.NativeAction();
