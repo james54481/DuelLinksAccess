@@ -14,7 +14,7 @@
   "home_information_duelist_point": "DUELIST POINT",
   "home_information_unknown": "資訊項目，名稱 UNKNOWN",
 
-  "home_information": "資訊",
+  "home_information": "活動資訊",
   "duel_waiting_opponent": "等待對手操作",
   "tutorial_character_option": "初始角色選項 {0}，名稱待確認",
   "tutorial_character_unknown": "已操作角色選項，目前角色名稱未能確認",
@@ -253,7 +253,7 @@
   "home_labo": "實驗室",
   "home_events": "活動",
   "home_gifts": "贈禮盒",
-  "home_info": "資訊",
+  "home_info": "通知",
   "home_user_info": "玩家資訊",
   "home_option": "選項",
   "home_neuron_code": "Neuron 代碼",
