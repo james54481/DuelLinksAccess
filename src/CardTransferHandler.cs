@@ -264,8 +264,8 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // Re-read the focused card (C/I, the mod's standard "current item" keys).
-            if (InputManager.TryConsumeKeyDown(KeyCode.C)
+            // Re-read the focused card (V/I, the mod's standard "current item" keys).
+            if (InputManager.TryConsumeKeyDown(KeyCode.V)
                 || InputManager.TryConsumeKeyDown(KeyCode.I))
             {
                 AnnounceFocus(ScanCells());

@@ -539,8 +539,8 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // C or I — verbose item details
-            if (InputManager.TryConsumeKeyDown(KeyCode.C) || InputManager.TryConsumeKeyDown(KeyCode.I))
+            // V or I — verbose item details
+            if (InputManager.TryConsumeKeyDown(KeyCode.V) || InputManager.TryConsumeKeyDown(KeyCode.I))
             {
                 AnnounceCurrentItem(verbose: true);
                 return;

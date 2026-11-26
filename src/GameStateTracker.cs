@@ -451,7 +451,7 @@ namespace DuelLinksAccess
                 GameScreen.CardDetail => "screen_card_detail",
                 GameScreen.Gate => "screen_gate",
                 GameScreen.Store => "screen_store",
-                GameScreen.Notices => "screen_notices",
+                GameScreen.Notices => GiftBoxAccessibility.IsCurrent() ? "home_gifts" : "screen_notices",
                 GameScreen.DuelTrials => "screen_duel_trials",
                 _ => null
             };

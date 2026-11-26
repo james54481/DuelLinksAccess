@@ -34,7 +34,7 @@ namespace DuelLinksAccess
             if (page == null) return false;
             bool gacha = page.GetComponentsInChildren<HtjsonNode>(false).Any(node => node.replaceParam != null
                 && node.replaceParam.TryGetValue("%basepath%", out var path) && path?.ToString() == "EventGacha.state");
-            return gacha && root.GetComponentsInChildren<Button>(false).Any(button => GachaRow(button.gameObject, true) != null);
+            return (gacha || Time.unscaledTime - ScreenButtonHandler.LastCapsuleSeenAt < 30f) && root.GetComponentsInChildren<Button>(false).Any(button => GachaRow(button.gameObject, true) != null);
         }
 
         private void AddEventGachaReceipt(GameObject root)

@@ -17,7 +17,7 @@ using System.Collections;
 //   See docs/technical-reference.md section "CRITICAL: Accessing Game Code"
 // ============================================================================
 
-[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.8", "DuelLinksAccess Team")]
+[assembly: MelonInfo(typeof(DuelLinksAccess.Main), "DuelLinksAccess", "1.4.2.9", "DuelLinksAccess Team")]
 [assembly: MelonGame("Konami Digital Entertainment Co., Ltd.", "Yu-Gi-Oh! DUEL LINKS")]
 
 namespace DuelLinksAccess
@@ -1106,7 +1106,7 @@ namespace DuelLinksAccess
 
         private void AnnounceHelp()
         {
-            string help = Loc.Get("help_text") + " " + Loc.Get("deck_operations_help_extra") + " " + Loc.Get("ui_shop_help")
+            string help = Loc.Get("help_text_unified") + " " + Loc.Get("deck_operations_help_extra") + " " + Loc.Get("ui_shop_help")
                 + " " + Loc.Get("duel_skill_help");
             ScreenReader.Say(help);
         }

@@ -564,7 +564,7 @@ namespace DuelLinksAccess
                 return;
             }
 
-            if (InputManager.TryConsumeKeyDown(KeyCode.C) || InputManager.TryConsumeKeyDown(KeyCode.I))
+            if (InputManager.TryConsumeKeyDown(KeyCode.V) || InputManager.TryConsumeKeyDown(KeyCode.I))
             {
                 AnnounceCurrentItem(verbose: true);
                 return;

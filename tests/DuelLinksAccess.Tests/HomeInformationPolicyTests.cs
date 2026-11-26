@@ -2,6 +2,14 @@ using Xunit;
 namespace DuelLinksAccess.Tests;
 public class HomeInformationPolicyTests
 {
+    [Theory]
+    [InlineData("file://Special/Images/#/Campaign145_Banner1", "home_information_daily_dream_packs")]
+    [InlineData("file://Special/Images/#/Campaign15_Banner1", "home_information_exp_bonus")]
+    [InlineData("file://Temp/Event/Ev0196/Images/#/GUI_T_Banner2", "home_information_duelist_road_lottery")]
+    [InlineData("file://Temp/Event/Ev0198/Images/#/GUI_T_Banner2", null)]
+    [InlineData("file://Special/Images/#/Campaign999_Banner1", null)]
+    public void NewArtworkUsesVerifiedNamesWithoutMatchingOtherEvents(string path, string expected)
+        => Assert.Equal(expected, HomeInformationPolicy.BannerKey(path));
     [Fact]
     public void SelectedTabFollowsTheRenderedNativeList()
     {

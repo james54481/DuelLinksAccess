@@ -9,6 +9,10 @@ namespace DuelLinksAccess
             => (requested || closing) && atHome && !dialogOpen;
         public static string BannerKey(string path)
         {
+            // Event images reuse GUI_T_Banner2; identify this one by its full
+            // event path, never by that shared filename alone.
+            if (path != null && path.EndsWith("/Event/Ev0196/Images/#/GUI_T_Banner2", System.StringComparison.Ordinal))
+                return "home_information_duelist_road_lottery";
             string name = path == null ? "" : path.Substring(path.LastIndexOf('/') + 1);
             return name switch
             {
@@ -19,6 +23,8 @@ namespace DuelLinksAccess
                 "Special11_Banner2" => "home_information_duelist_point",
                 "GUI_T_Banner1_PVPRank2" => "home_information_ranked",
                 "Campaign142_Banner1" => "home_information_anniversary_countdown",
+                "Campaign145_Banner1" => "home_information_daily_dream_packs",
+                "Campaign15_Banner1" => "home_information_exp_bonus",
                 "Campaign130_Banner1" => "home_information_ninth_anniversary",
                 "GUI_T_Banner1_PVPRankCard" => "home_information_ticket_exchange",
                 _ => null

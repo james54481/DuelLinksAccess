@@ -6,9 +6,9 @@
 
 ## 開發狀態
 
-繁體中文維護版版本為 **1.4.2.8**。前三段對應原作者基礎版本，第四段為本維護版的修訂次數。R2～R21 僅為歷史本機測試包標記。功能的驗證範圍與限制請見更新日誌。
+繁體中文維護版版本為 **1.4.2.9**。前三段對應原作者基礎版本，第四段為本維護版的修訂次數。R2～R21 僅為歷史本機測試包標記。功能的驗證範圍與限制請見更新日誌。
 
-下載請前往 [本維護倉庫 Releases](https://github.com/james54481/DuelLinksAccess/releases)。模組標籤為 `v1.4.2.8`，更新程式使用獨立版本 [`0.1.2`](https://github.com/james54481/DuelLinksAccess/releases/tag/updater-v0.1.2)。
+下載請前往 [本維護倉庫 Releases](https://github.com/james54481/DuelLinksAccess/releases)。模組標籤為 `v1.4.2.9`，更新程式使用獨立版本 [`0.1.2`](https://github.com/james54481/DuelLinksAccess/releases/tag/updater-v0.1.2)。
 
 ## 內容
 
@@ -39,7 +39,7 @@ dotnet build DuelLinksAccess.csproj -c Release -p:DuelLinksPath="你的遊戲安
 
 ## 貢獻資訊
 
-繁體中文維護、功能新增與錯誤修正：james54481。署名日期：2026-11-20。
+繁體中文維護、功能新增與錯誤修正：james54481。署名日期：2026-11-26。
 
 原始專案作者：Florian Beijers（zersiax）。原作者聲明與 MIT 授權予以保留。
 

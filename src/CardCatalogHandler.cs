@@ -416,7 +416,7 @@ namespace DuelLinksAccess
                 return;
             }
 
-            if (InputManager.TryConsumeKeyDown(KeyCode.C)
+            if (InputManager.TryConsumeKeyDown(KeyCode.V)
                 || InputManager.TryConsumeKeyDown(KeyCode.I))
             {
                 AnnounceCurrentCard(verbose: true);
@@ -512,7 +512,7 @@ namespace DuelLinksAccess
                 return;
             }
 
-            if (InputManager.TryConsumeKeyDown(KeyCode.C)
+            if (InputManager.TryConsumeKeyDown(KeyCode.V)
                 || InputManager.TryConsumeKeyDown(KeyCode.I))
             {
                 AnnounceCurrentCard(verbose: true);

@@ -11,7 +11,7 @@ namespace DuelLinksAccess
     /// Provides card browsing, selection, and exchange confirmation
     /// for CardGetterViewController (ticket exchange, card trader, etc.).
     /// </summary>
-    public class TicketExchangeHandler
+    public partial class TicketExchangeHandler
     {
         #region Fields
 
@@ -122,7 +122,7 @@ namespace DuelLinksAccess
             _wasActive = true;
             IsActive = true;
             _focusIndex = 0;
-            _confirmFocused = false;
+            _confirmFocused = false; _ticketSelectedFocused = false; _ticketOperationsOpen = false;
             _initialScanDone = false;
             _initialScanDelay = 1.0f;
             _initialScanAttempts = 0;
@@ -155,7 +155,7 @@ namespace DuelLinksAccess
 
             _awaitingExchangeResult = false;
             _exchangeDialogSeen = false;
-            _confirmFocused = false;
+            _confirmFocused = false; _ticketSelectedFocused = false; _ticketOperationsOpen = false;
 
             int previousMrk = (_cardIds.Count > 0 && _focusIndex >= 0 && _focusIndex < _cardIds.Count)
                 ? _cardIds[_focusIndex] : -1;
@@ -271,6 +271,20 @@ namespace DuelLinksAccess
                 if (_vc == null) return;
 
                 string mode = GetModeName();
+                if (mode == "CardTicket" && _vc.mainChoiceData != null)
+                {
+                    var displayed = _vc.mainChoiceData;
+                    int count = displayed.GetListNum();
+                    for (int n = 0; n < count; n++)
+                    {
+                        var card = displayed.GetListItem(n);
+                        _cardIds.Add(card.Mrk);
+                        _cardKirarities.Add(card.Kirarity);
+                        _hasCardIdentity.Add(true);
+                    }
+                    DebugLogger.Log(LogCategory.Handler, "TicketExchange", $"Loaded {_cardIds.Count} cards from displayed native list; total={_vc.choiceList?.Count}");
+                    return; // An empty filtered result must stay empty.
+                }
                 var choices = _vc.choiceList;
                 var exchanges = _vc.exchangeList;
                 var source = TicketBrowseSourcePolicy.Choose(mode, choices?.Count ?? 0, exchanges?.Count ?? 0);
@@ -313,6 +327,9 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            RefreshTicketAfterOperation();
+            if (ProcessTicketOperations()) return;
+            if (ProcessTicketSelectionInput()) return;
             // Left / Right — navigate cards
             if (InputManager.TryConsumeKeyDown(KeyCode.LeftArrow))
             {
@@ -365,7 +382,7 @@ namespace DuelLinksAccess
                     clear?.gameObject?.activeInHierarchy == true, clear?.IsInteractable() == true))
                 {
                     clear.onClick.Invoke();
-                    _confirmFocused = false;
+                    _confirmFocused = false; _ticketSelectedFocused = false; _ticketOperationsOpen = false;
                     ScreenReader.Say(Loc.Get("ticket_selection_cleared"));
                 }
                 return;
@@ -378,8 +395,8 @@ namespace DuelLinksAccess
                 return;
             }
 
-            // C or I — verbose card reading
-            if (InputManager.TryConsumeKeyDown(KeyCode.C) || InputManager.TryConsumeKeyDown(KeyCode.I))
+            // V or I — verbose card reading
+            if (InputManager.TryConsumeKeyDown(KeyCode.V) || InputManager.TryConsumeKeyDown(KeyCode.I))
             {
                 AnnounceCurrentCard(verbose: true);
                 return;
@@ -428,7 +445,7 @@ namespace DuelLinksAccess
 
         private void NavigateBy(int delta)
         {
-            _confirmFocused = false;
+            _confirmFocused = false; _ticketSelectedFocused = false; _ticketOperationsOpen = false;
             if (_cardIds.Count == 0)
             {
                 ScreenReader.Say(Loc.Get("ticket_no_cards"));
@@ -487,6 +504,7 @@ namespace DuelLinksAccess
                     if (result)
                     {
                         ScreenReader.Say(Loc.Get("ticket_selected", name));
+                        if (GetModeName() == "CardTicket") ScreenReader.SayQueued(TicketSelectionProgress());
                         MelonLoader.MelonLogger.Msg($"[TicketExchange] Selected mrk={mrk} kirarity={kirarity} name={name}");
                         bool insufficient = AnnounceOrbCost(queued: true);
                         if (!insufficient) ScreenReader.SayQueued(Loc.Get("ticket_confirm_hint"));

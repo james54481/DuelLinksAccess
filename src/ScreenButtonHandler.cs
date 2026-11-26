@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -562,6 +562,10 @@ namespace DuelLinksAccess
                 AddSceneAlbumContents(_screenRoot);
                 AddRouletteAccessibility(_screenRoot);
                 AddEventGachaAccessibility(_screenRoot);
+                if (_screenRoot.name == "DuelCapsule") { ScanCapsule(_screenRoot); return; }
+                AddGiftBoxAccessibility(_screenRoot);
+                AddGiftTicketAccessibility(_screenRoot);
+                AddTreasureEventAccessibility(_screenRoot);
                 AddScenarioAccessibility(_screenRoot);
                 AddDeckRecipeLabels(_screenRoot);
                 if (_screenRoot.name == "Home")
@@ -644,6 +648,18 @@ namespace DuelLinksAccess
                     _bannerFocusTarget = null;
                     _bannerFocusRoot = null;
                 }
+                if (_treasureSceneFocus != null && IsTreasureEvent(_screenRoot))
+                {
+                    int sceneIndex = _items.FindIndex(item => item.Go == _treasureSceneFocus);
+                    _treasureSceneFocus = null;
+                    if (sceneIndex >= 0) {
+                        _focusIndex = sceneIndex;
+                        AnnounceCurrentItem();
+                        foreach (string text in AccessibleUiText.ReadParts(_screenRoot).Distinct())
+                            if (text.Contains("收集活動分數")) ScreenReader.SayQueued(text);
+                        return;
+                    }
+                }
                 if (_noticeTabFocus != null)
                 {
                     int tabIndex = _items.FindIndex(item => item.Label == _noticeTabFocus
@@ -671,7 +687,7 @@ namespace DuelLinksAccess
                     // Htjson pages often have explanatory text alongside buttons
                     // (e.g. Duel Trials quiz descriptions, hint text). Capture it
                     // so T can re-read it, and announce on entry.
-                    if (!playerProfile && (_screenRoot.name == "HtjsonPage" || _screenRoot.name == "TutorialArrowPart"))
+                    if (!playerProfile && !IsTreasureEvent(_screenRoot) && !GiftBoxAccessibility.IsPage(_screenRoot) && (_screenRoot.name == "HtjsonPage" || _screenRoot.name == "TutorialArrowPart"))
                     {
                         string pageText = ReadScreenText(_screenRoot);
                         if (!string.IsNullOrEmpty(pageText))
@@ -2961,6 +2977,8 @@ namespace DuelLinksAccess
 
         private void ProcessInput()
         {
+            if (HandleCapsuleInput()) return;
+            PollGiftBox();
             if (HandleEventGachaAnimation()) return;
             if (GateRewardBrowser.Handle(_screenRoot)) return;
             if (ScenarioControlPolicy.IsScenario(_screenRoot?.name)

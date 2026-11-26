@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using MelonLoader;
@@ -1613,7 +1613,7 @@ namespace DuelLinksAccess
             }
         }
 
-        private static bool ClickDialogTab(RectTransform tab)
+        internal static bool ClickDialogTab(RectTransform tab)
         {
             if (tab == null || !tab.gameObject.activeInHierarchy) return false;
             var system = UnityEngine.EventSystems.EventSystem.current;
